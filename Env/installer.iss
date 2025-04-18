@@ -1,30 +1,26 @@
-; --- MyAppInstaller.iss ---
 [Setup]
-AppName=MyPythonApp
-AppVersion=1.0
-DefaultDirName={pf}\MyPythonApp
-DefaultGroupName=MyPythonApp
-OutputBaseFilename=MyPythonInstaller
+AppName=TestInstaller
+AppVersion=1.1
+DefaultDirName=C:\Python Apps\TestInstaller
+OutputBaseFilename=TestInstallerInstaller
+PrivilegesRequired=admin
 Compression=lzma
 SolidCompression=yes
-; We need admin privileges because the script writes to %ProgramData% and may remove folders
-PrivilegesRequired=admin
+OutputDir=Output
 
 [Files]
-; 1) Include your entire "SetupFiles" directory (which holds setup.ps1, metadata.txt, etc.)
-;    Adjust the source path to where these files live on your dev machine:
-Source: "C:\path\to\SetupFiles\*"; DestDir: "{app}\SetupFiles"; Flags: recursesubdirs ignoreversion
+; This includes all packaged files from _temp\TestInstaller into the user-chosen {app}.
+Source: "_temp\TestInstaller\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
-; 2) If you have other files (like your main .zip or a packaged folder) you want installed:
-;    Example: a build artifact MyApp.zip
-Source: "C:\School\b\ENV2"; DestDir: "{app}\SetupFiles"; Flags: ignoreversion
+[Icons]
+Name: "{group}\TestInstaller"; Filename: "{app}\run_app.bat"
+Name: "{userdesktop}\TestInstaller"; Filename: "{app}\run_app.bat"; Tasks: desktopicon
 
-; (Add any other files you need copied into {app}. For example, you might be
-;  packaging the entire output from your dev script. If so, specify them here.)
+[Tasks]
+Name: "desktopicon"; Description: "Create a &desktop icon"
 
 [Run]
-; After files are installed to {app}, run the PowerShell script.
-; We'll do it in hidden mode so the user doesn't see a console window:
+; Pass the final install location as -TargetPath, and place the log next to the installer exe (i.e. {src})
 Filename: "powershell.exe"; \
-    Parameters: "-ExecutionPolicy Bypass -NoProfile -File ""{app}\SetupFiles\setup.ps1"" -Silent"; \
-    Flags: waituntilterminated runhidden
+  Parameters: "-ExecutionPolicy Bypass -NoProfile -File ""{app}\SetupFiles\setup.ps1"" -TargetPath ""{app}"" -LogPath ""{src}\testinstaller_setup.log"""; \
+  Flags: waituntilterminated

@@ -1,79 +1,95 @@
 #!/usr/bin/env python3
 """
-build_installer.py  –  one‑shot builder, no code‑signing
----------------------------------------------------------
-layout expected:
+build_installer.py  –  one‑shot builder that produces a single .exe
 
-project_root/
-│
-├─ src/                        ← your real app (has requirements.txt)
-├─ tools/
-│    └─ package_app.py
-├─ installer/
-│    └─ MinimalInstallerVisiblePS.iss
-└─ build_installer.py          ← this file
+Usage:
+  python build_installer.py \
+    --app-folder   /path/to/your/project \
+    --iss          /path/to/installer.iss \
+    --output-exe   /where/to/FinalSetup.exe \
+    [--entry-file  core.py] \
+    [--app-name    MyApp] \
+    [--version     1.0.0] \
+    [--iscc        "C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe"]
 """
 
-import os, shutil, subprocess, sys, zipfile
+import argparse
+import shutil
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
-
-# ─────────── configurable knobs ────────────
-APP_NAME     = "MyPythonApp"
-APP_VERSION  = "1.0.0"
-ENTRY_FILE   = "core.py"
-
-SOURCE_APP_DIR  = Path("src")
-PY_PACKAGER     = Path("tools", "package_app.py")
-ISS_TEMPLATE    = Path("installer", "MinimalInstallerVisiblePS.iss")
-
-BUILD_DIR = Path("build")
-DIST_DIR  = Path("dist")
-OUTPUT_NAME = f"{APP_NAME}_{APP_VERSION}"
-# ───────────────────────────────────────────
 
 def run(cmd, **kw):
     print(">", " ".join(map(str, cmd)))
     subprocess.check_call(cmd, **kw)
 
-def clean(p: Path):
-    if p.exists():
-        shutil.rmtree(p)
-    p.mkdir(parents=True, exist_ok=True)
+def find_iscc(custom_path=None):
+    if custom_path:
+        p = Path(custom_path)
+        if p.exists(): return str(p)
+    auto = shutil.which("ISCC.exe")
+    if auto: return auto
+    # default install folder
+    p = Path(r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe")
+    if p.exists(): return str(p)
+    sys.exit("ERROR: ISCC.exe not found (install Inno Setup 6)")
 
-def main() -> None:
-    clean(BUILD_DIR)
-    clean(DIST_DIR)
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--app-folder", required=True,
+                   help="Your Python project root (with requirements.txt)")
+    p.add_argument("--iss", required=True,
+                   help="Path to your Inno Setup .iss script")
+    p.add_argument("--output-exe", required=True,
+                   help="Where to write the final installer .exe")
+    p.add_argument("--entry-file", default="core.py",
+                   help="Entrypoint inside your project (default: core.py)")
+    p.add_argument("--app-name", help="Name of your app (defaults to project folder name)")
+    p.add_argument("--version", default="1.0.0",
+                   help="Version string (default: 1.0.0)")
+    p.add_argument("--iscc", help="Explicit path to ISCC.exe")
+    args = p.parse_args()
 
-    # ----- step 1  run packager ------------------------------------------------
-    pkg_zip = Path.cwd() / f"{APP_NAME}_pkg.zip"
-    run([sys.executable, PY_PACKAGER,
-         SOURCE_APP_DIR,
-         "--app-name", APP_NAME,
-         "--entry-file", ENTRY_FILE,
-         "--version", APP_VERSION,
-         "-n", pkg_zip.name])
+    app_dir    = Path(args.app_folder).resolve()
+    iss_path   = Path(args.iss).resolve()
+    output_exe = Path(args.output_exe).resolve()
+    output_exe.parent.mkdir(parents=True, exist_ok=True)
 
-    with zipfile.ZipFile(pkg_zip) as zf:
-        zf.extractall(BUILD_DIR)
-    pkg_zip.unlink()
+    if not app_dir.is_dir():
+        sys.exit(f"ERROR: app-folder not found: {app_dir}")
+    if not iss_path.is_file():
+        sys.exit(f"ERROR: .iss file not found: {iss_path}")
 
-    build_subdir = next(BUILD_DIR.iterdir())   # first folder inside build/
-    print("Build folder:", build_subdir)
+    app_name = args.app_name or app_dir.name
+    version  = args.version
+    iscc     = find_iscc(args.iscc)
 
-    # ----- step 2  compile Inno Setup -----------------------------------------
-    iscc = shutil.which("ISCC.exe")
-    if not iscc:
-        sys.exit("ERROR: ISCC.exe not found (install Inno Setup 6 and add to PATH)")
+    with tempfile.TemporaryDirectory() as tmp:
+        build_dir = Path(tmp) / f"{app_name}_pkg"
+        # 1) run package_app.py
+        run([sys.executable,
+             str(Path(__file__).parent / "package_app.py"),
+             str(app_dir),
+             "--app-name",    app_name,
+             "--entry-file",  args.entry_file,
+             "--version",     version,
+             "--out-dir",     str(build_dir)],
+            cwd=tmp)
 
-    run([iscc,
-         f"/O{DIST_DIR}",
-         f"/DAppVer={APP_VERSION}",
-         f"/DOutputName={OUTPUT_NAME}",
-         f"/DBuildDir={build_subdir}",
-         ISS_TEMPLATE])
+        if not build_dir.exists():
+            sys.exit("ERROR: packaging failed (no build folder)")
 
-    exe_path = DIST_DIR / f"{OUTPUT_NAME}.exe"
-    print("\n✓ Installer built →", exe_path)
+        # 2) compile the .iss
+        defines = [
+            f"/DBuildDir={build_dir}",
+            f"/DAppName={app_name}",
+            f"/DAppVer={version}",
+            f"/DOutName={output_exe.stem}"
+        ]
+        run([iscc, str(iss_path)] + defines)
+
+    print(f"\n✓ Installer ready → {output_exe}")
 
 if __name__ == "__main__":
     try:

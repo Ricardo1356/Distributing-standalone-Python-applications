@@ -1,18 +1,3 @@
-#!/usr/bin/env python3
-"""
-build_installer.py  –  one‑shot builder that produces a single .exe
-
-Usage:
-  python build_installer.py \
-    --app-folder   /path/to/your/project \
-    --iss          /path/to/installer.iss \
-    --output-exe   /where/to/FinalSetup.exe \
-    [--entry-file  core.py] \
-    [--app-name    MyApp] \
-    [--version     1.0.0] \
-    [--iscc        "C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe"]
-"""
-
 import argparse
 import shutil
 import subprocess
@@ -30,10 +15,10 @@ def find_iscc(custom_path=None):
         if p.exists(): return str(p)
     auto = shutil.which("ISCC.exe")
     if auto: return auto
-    # default install folder
+    # default ISCC install folder
     p = Path(r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe")
     if p.exists(): return str(p)
-    sys.exit("ERROR: ISCC.exe not found (install Inno Setup 6)")
+    sys.exit("ERROR: ISCC.exe not found (install Inno Setup 6)")
 
 def main():
     p = argparse.ArgumentParser()
@@ -41,8 +26,8 @@ def main():
                    help="Your Python project root (with requirements.txt)")
     p.add_argument("--iss", required=True,
                    help="Path to your Inno Setup .iss script")
-    p.add_argument("--output-exe", required=True,
-                   help="Where to write the final installer .exe")
+    p.add_argument("--output-dir", default="./dist",
+                   help="Where to write the final installer .exe (default: ./dist)")
     p.add_argument("--entry-file", default="core.py",
                    help="Entrypoint inside your project (default: core.py)")
     p.add_argument("--app-name", help="Name of your app (defaults to project folder name)")
@@ -53,8 +38,9 @@ def main():
 
     app_dir    = Path(args.app_folder).resolve()
     iss_path   = Path(args.iss).resolve()
-    output_exe = Path(args.output_exe).resolve()
-    output_exe.parent.mkdir(parents=True, exist_ok=True)
+    # Use output_dir now
+    output_dir = Path(args.output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True) # Ensure output directory exists
 
     if not app_dir.is_dir():
         sys.exit(f"ERROR: app-folder not found: {app_dir}")
@@ -64,6 +50,11 @@ def main():
     app_name = args.app_name or app_dir.name
     version  = args.version
     iscc     = find_iscc(args.iscc)
+
+    # Construct the expected final output path based on .iss OutputBaseFilename
+    # Assumes OutputBaseFilename={#AppName}-{#AppVersion}-Installer
+    final_exe_name = f"{app_name}-{version}-Installer.exe"
+    final_exe_path = output_dir / final_exe_name
 
     with tempfile.TemporaryDirectory() as tmp:
         build_dir = Path(tmp) / f"{app_name}_pkg"
@@ -81,18 +72,22 @@ def main():
             sys.exit("ERROR: packaging failed (no build folder)")
 
         # 2) compile the .iss
+        # Pass AppName and AppVersion for the OutputBaseFilename in the .iss
+        # Use /O to specify the output *directory* for ISCC
         defines = [
             f"/DBuildDir={build_dir}",
             f"/DAppName={app_name}",
-            f"/DAppVer={version}",
-            f"/DOutName={output_exe.stem}"
+            f"/DAppVersion={version}" # Changed from AppVer to match .iss
         ]
-        run([iscc, str(iss_path)] + defines)
+        iscc_cmd = [iscc, f"/O{output_dir}", str(iss_path)] + defines
+        run(iscc_cmd)
 
-    print(f"\n✓ Installer ready → {output_exe}")
+    print(f"\n✓ Installer ready → {final_exe_path}") # Use the constructed path
 
 if __name__ == "__main__":
     try:
         main()
     except subprocess.CalledProcessError as e:
         sys.exit(f"\n✖ Build failed (exit {e.returncode})")
+    except Exception as e:
+        sys.exit(f"\n✖ Build failed: {e}")

@@ -6,10 +6,80 @@ param(
 $ProgressPreference = 'SilentlyContinue'
 $ErrorActionPreference = 'Stop'
 
-# Add debugging to capture and display errors
-$ErrorLogPath = "$env:TEMP\app_install_error.log"
+# --- Global variable for the main log file path ---
+$LogFilePath = $null
+
+# --- Logging Function ---
+function Write-Log {
+    param(
+        [Parameter(Mandatory=$true, ValueFromPipeline=$true)]
+        [string]$Message,
+
+        [ValidateSet("INFO", "WARN", "ERROR", "FATAL")]
+        [string]$Level = "INFO"
+    )
+    process {
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        $logEntry = "[$timestamp] [$Level] $Message"
+
+        # Attempt to write to the main log file if the path is set
+        if ($LogFilePath -ne $null) {
+            try {
+                # Use UTF8 encoding for better character support
+                $logEntry | Out-File -FilePath $LogFilePath -Append -Encoding UTF8 -ErrorAction Stop
+            } catch {
+                # Fallback if main log fails: Write to console and temp error log
+                Write-Host "LOGGING ERROR: Could not write to '$LogFilePath'. Fallback needed. Error: $_"
+                $fallbackErrorLog = Join-Path $env:TEMP "app_install_fallback_error.log"
+                $logEntry | Out-File -FilePath $fallbackErrorLog -Append -Encoding UTF8
+            }
+        } else {
+            # If LogFilePath isn't set yet (very early stages), write to console
+            Write-Host $logEntry
+        }
+    }
+}
+
+# --- Fallback Error Log Path (for very early errors) ---
+$EarlyErrorLogPath = Join-Path $env:TEMP "app_install_early_error_$(Get-Date -Format 'yyyyMMddHHmmss').log"
+
 try {
-    # --- Helper functions remain unchanged ---
+    # --- Determine target installation directory ---
+    # This needs to happen early to establish the main log file path
+    if ($InstallPath -eq $null -or $InstallPath -eq "" -or (-not (Test-Path $InstallPath -PathType Container))) {
+        # Cannot use Write-Log yet as $targetDir is not confirmed
+        $errorMsg = "FATAL: Invalid or missing installation path provided via -InstallPath parameter. Value received: '$InstallPath'"
+        Write-Host $errorMsg
+        $errorMsg | Out-File -FilePath $EarlyErrorLogPath -Append -Encoding UTF8
+        exit 1 # Exit immediately
+    } else {
+        # Use the provided path, ensure it's absolute
+        $targetDir = Resolve-Path -Path $InstallPath
+        # --- Define the main log file path NOW ---
+        $LogFilePath = Join-Path $targetDir "setup_log.txt"
+
+        # Clear previous log file if it exists
+        if (Test-Path $LogFilePath) {
+            Remove-Item $LogFilePath -Force
+        }
+        Write-Log "Target installation directory confirmed: $targetDir"
+        Write-Log "Log file initialized at: $LogFilePath"
+
+        # Create the directory if it doesn't exist (should have been created by Inno Setup, but check anyway)
+        if (-Not (Test-Path $targetDir)) {
+            Write-Log "Creating installation directory: $targetDir"
+            New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+        }
+    }
+
+    # --- Start Logging ---
+    Write-Log "=== Starting setup/update ==="
+    Write-Log "Timestamp: $(Get-Date)"
+    Write-Log "Running with user: $env:USERNAME"
+    Write-Log "Current directory: $(Get-Location)"
+    Write-Log "InstallPath parameter received: '$InstallPath'"
+
+    # --- Helper functions (no logging needed inside definitions) ---
     function Compare-Versions($v1, $v2) {
         try {
             $ver1 = [version]$v1
@@ -17,286 +87,317 @@ try {
             return $ver1.CompareTo($ver2)
         }
         catch {
-            Write-Output "Version comparison failed: $_"
-            return 0
+            # Log comparison failures
+            Write-Log "Version comparison failed: $_" -Level WARN
+            return 0 # Treat as equal if comparison fails
         }
     }
 
     function Ask-YesNo($message) {
-        $response = Read-Host "$message (Y/N)"
-        return ($response -match '^(Y|y)')
-    }
-
-    function Generate-RunScript($targetDir) {
-        $metaFile = Join-Path $targetDir "SetupFiles\metadata.txt"
-        if (-Not (Test-Path $metaFile)) {
-            Write-Output "Warning: metadata.txt not found in $targetDir\SetupFiles. Skipping run_app.bat update."
-            return
+        # This function might not be needed if running non-interactively from installer
+        try {
+            $response = Read-Host "$message (Y/N)" # Keep interaction on console
+            return ($response -match '^(Y|y)')
+        } catch {
+            Write-Log "Could not prompt user (non-interactive?). Assuming 'No'." -Level WARN
+            return $false
         }
-        $installedMetadata = @{}
-        Get-Content $metaFile | ForEach-Object {
-            if ($_ -match "^\s*([^=]+)\s*=\s*(.+)$") {
-                $installedMetadata[$matches[1]] = $matches[2]
-            }
-        }
-        $appVersionInstalled = $installedMetadata["Version"]
-        $batContent = @"
-@echo off
-cd /d "%~dp0"
-echo Launching the application...
-echo Application Version: $appVersionInstalled
-env\python.exe SetupFiles\boot.py
-pause
-"@
-        $batPath = Join-Path $targetDir "run_app.bat"
-        $batContent | Out-File -Encoding ASCII $batPath
-        Write-Output "Generated run_app.bat at '$batPath'."
     }
 
     function Generate-SetupBat($targetDir) {
         $batContent = @"
 @echo off
+echo Re-running setup/update...
 powershell.exe -ExecutionPolicy Bypass -NoProfile -File "%~dp0\SetupFiles\setup.ps1" -InstallPath "%~dp0"
 pause
 "@
         $batPath = Join-Path $targetDir "setup.bat"
-        $batContent | Out-File -Encoding ASCII $batPath
-        Write-Output "Generated setup.bat at '$batPath'."
+        try {
+            $batContent | Out-File -Encoding ASCII -FilePath $batPath -Force
+            Write-Log "Generated setup helper batch file at '$batPath'."
+        } catch {
+            Write-Log "Could not generate setup.bat in '$targetDir'. Error: $_" -Level WARN
+        }
     }
 
-    Write-Output "=== Starting setup/update ==="
-    Write-Output "Running with user: $env:USERNAME"
-    Write-Output "Current directory: $(Get-Location)"
-    
-    # Additional debugging for InstallPath
-    Write-Output "InstallPath parameter received: '$InstallPath'"
-
-    # Determine the folder where this script is located.
+    # Determine the folder where this script is located (within SetupFiles).
     $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-    Write-Output "Script directory is: $scriptDir"
+    Write-Log "Script directory (SetupFiles) is: $scriptDir"
 
-    # Read package metadata from metadata.txt (assumed to be in the same folder as this script).
+    # Read package metadata from metadata.txt
     $packageMetadataFile = Join-Path $scriptDir "metadata.txt"
     if (-Not (Test-Path $packageMetadataFile)) {
-        throw "No metadata.txt found in $scriptDir. Aborting."
+        throw "FATAL: No metadata.txt found in '$scriptDir'. Aborting." # Throw will be caught and logged
     }
 
     $packageMetadata = @{}
     Get-Content $packageMetadataFile | ForEach-Object {
         if ($_ -match "^\s*([^=]+)\s*=\s*(.+)$") {
-            $packageMetadata[$matches[1]] = $matches[2]
+            $packageMetadata[$matches[1].Trim()] = $matches[2].Trim()
         }
     }
 
     $newAppName    = $packageMetadata["AppName"]
     $newEntryFile  = $packageMetadata["EntryFile"]
     $newVersion    = $packageMetadata["Version"]
-    $appFolderName = $packageMetadata["AppFolder"]
+    $appFolderName = $packageMetadata["AppFolder"] # The name of the subfolder containing the app's Python code
 
-    Write-Output "Package metadata:"
-    Write-Output "  AppName: $newAppName"
-    Write-Output "  AppFolder: $appFolderName"
-    Write-Output "  EntryFile: $newEntryFile"
-    Write-Output "  New Package Version: $newVersion"
-
-    # Determine target installation directory
-    if ($InstallPath -eq $null -or $InstallPath -eq "") {
-        # Use current directory as default if no path provided
-        $targetDir = (Get-Location).Path
-        Write-Output "No installation path provided, using current directory: $targetDir"
-    } else {
-        # Use the provided path
-        $targetDir = $InstallPath
-        
-        # Create the directory if it doesn't exist
-        if (-Not (Test-Path $targetDir)) {
-            Write-Output "Creating installation directory: $targetDir"
-            New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
-        }
+    if (-not $newAppName -or -not $appFolderName -or -not $newVersion) {
+        throw "FATAL: Metadata file '$packageMetadataFile' is missing required fields (AppName, AppFolder, Version)."
     }
 
-    Write-Output "Target installation directory is: $targetDir"
-    Write-Output "Testing write permissions to target directory..."
-    
+    Write-Log "Package metadata:"
+    Write-Log "  AppName: $newAppName"
+    Write-Log "  AppFolder: $appFolderName"
+    Write-Log "  EntryFile: $newEntryFile"
+    Write-Log "  New Package Version: $newVersion"
+
+    Write-Log "Testing write permissions to target directory '$targetDir'..."
     try {
-        # Test writing permissions by creating and removing a test file
         $testFilePath = Join-Path $targetDir "test_write_permissions.tmp"
-        "test" | Out-File -FilePath $testFilePath -ErrorAction Stop
-        Remove-Item -Path $testFilePath -ErrorAction Stop
-        Write-Output "Write permissions confirmed."
+        "test" | Out-File -FilePath $testFilePath -Encoding ASCII -ErrorAction Stop
+        Remove-Item -Path $testFilePath -Force -ErrorAction Stop
+        Write-Log "Write permissions confirmed."
     } catch {
-        Write-Output "ERROR: Cannot write to target directory. The installation may need administrator privileges."
-        Write-Output "Error details: $_"
-        throw "Installation failed due to insufficient permissions. Try running the installer as administrator."
+        # Log the error before throwing
+        Write-Log "Cannot write to target directory '$targetDir'. The installation requires administrator privileges." -Level ERROR
+        Write-Log "Error details: $_" -Level ERROR
+        throw "Installation failed due to insufficient permissions. Ensure the installer is run as administrator."
     }
 
     # --- Copy Package Contents ---
-    # We copy the contents of the parent of $scriptDir (which is the packaged folder)
-    # Exclude any top-level BAT files so they don't overwrite our dynamically generated ones.
-    $sourceDir = Split-Path -Parent $scriptDir
-    Write-Output "Copying package contents from '$sourceDir\*' to '$targetDir'..."
-    
+    Write-Log "Skipping file copy step as Inno Setup handles initial file placement."
+
+    # --- Generate setup.bat helper ---
+    Generate-SetupBat $targetDir
+
+    # --- Determine required Python version from the requirements.txt ---
+    $appPath = Join-Path -Path $targetDir -ChildPath $appFolderName
+    $reqFile = Join-Path -Path $appPath -ChildPath "requirements.txt"
+
+    if (-Not (Test-Path $reqFile)) {
+        throw "FATAL: Could not find '$appFolderName\requirements.txt' in '$targetDir'. Searched path: '$reqFile'. Aborting setup."
+    }
+    Write-Log "Found requirements file at: $reqFile"
+
+    $requiredPythonVersion = "3.10.0" # Default if not specified
     try {
-        # Use robocopy instead of Copy-Item for better handling of permissions and errors
-        # /E - copy subdirectories, including empty ones
-        # /NFL - No file list - don't log file names
-        # /NDL - No directory list - don't log directory names
-        # /NJH - No job header
-        # /NJS - No job summary
-        # /XF - exclude files matching the specified names/paths/wildcards
-        $robocopyArgs = @(
-            "`"$sourceDir`"",
-            "`"$targetDir`"", 
-            "/E", 
-            "/NFL", 
-            "/NDL",
-            "/NJH",
-            "/NJS",
-            "/XF", "*.bat"
-        )
-        
-        Write-Output "Running: robocopy $robocopyArgs"
-        $robocopyResult = Start-Process -FilePath "robocopy" -ArgumentList $robocopyArgs -NoNewWindow -Wait -PassThru
-        
-        # Robocopy exit codes: 0 = no files copied, 1 = files copied successfully
-        # Exit codes 0-7 are considered success
-        if ($robocopyResult.ExitCode -gt 7) {
-            Write-Output "WARNING: Robocopy reported some issues (exit code $($robocopyResult.ExitCode))"
-        } else {
-            Write-Output "Files copied successfully."
+        foreach ($line in Get-Content $reqFile) {
+            if ($line -match "^\s*python\s*==\s*([\d\.]+)") {
+                $requiredPythonVersion = $matches[1]
+                Write-Log "Found required Python version in requirements.txt: $requiredPythonVersion"
+                break
+            }
         }
     } catch {
-        Write-Output "ERROR during file copy: $_"
-        throw "Failed to copy application files."
+        Write-Log "Could not read or parse requirements.txt for Python version. Using default $requiredPythonVersion. Error: $_" -Level WARN
     }
+    Write-Log "Using required Python version: $requiredPythonVersion"
 
-    # --- Generate our BAT launchers (so they override any BAT files from the package) ---
-    Generate-SetupBat $targetDir
-    Generate-RunScript $targetDir
-
-    # --- Rest of the script remains the same ---
-    # --- Determine required Python version from the requirements.txt in the app folder ---
-    $reqFile = Join-Path $targetDir "$appFolderName\requirements.txt"
-    if (-Not (Test-Path $reqFile)) { throw "Could not find $appFolderName\requirements.txt in $targetDir. Aborting setup." }
-    Write-Output "Found requirements file at: $reqFile"
-    $requiredPythonVersion = "3.10.0"  # default
-    foreach ($line in Get-Content $reqFile) {
-        if ($line -match "python==([\d\.]+)") {
-            $requiredPythonVersion = $matches[1]
-            Write-Output "Found required Python version: $requiredPythonVersion"
-            break
-        }
-    }
-    Write-Output "Using required Python version: $requiredPythonVersion"
-
-    # --- Check bundled Python in the env folder ---
+    # --- Check/Install/Update bundled Python in the env folder ---
     $envDir = Join-Path $targetDir "env"
     $pythonExe = Join-Path $envDir "python.exe"
     $needPythonUpdate = $false
+
     if (Test-Path $pythonExe) {
         try {
             $installedPythonVerStr = & $pythonExe -c "import platform; print(platform.python_version())"
-            Write-Output "Installed bundled Python version: $installedPythonVerStr"
-            if ([version]$installedPythonVerStr -ne [version]$requiredPythonVersion) {
-                Write-Output "Installed Python version does not match required version. Updating bundled Python..."
+            Write-Log "Installed bundled Python version: $installedPythonVerStr"
+            if (Compare-Versions $installedPythonVerStr $requiredPythonVersion -ne 0) {
+                Write-Log "Installed Python version ($installedPythonVerStr) does not match required version ($requiredPythonVersion). Updating bundled Python..."
                 $needPythonUpdate = $true
+            } else {
+                 Write-Log "Installed Python version matches required version."
             }
         }
         catch {
-            Write-Output "Error determining installed Python version. Will update bundled Python."
+            Write-Log "Error determining installed Python version. Will attempt to update bundled Python. Error: $_" -Level WARN
             $needPythonUpdate = $true
         }
     }
     else {
-        Write-Output "No bundled Python found. Need to download."
+        Write-Log "No bundled Python found at '$pythonExe'. Need to download."
         $needPythonUpdate = $true
     }
 
     if ($needPythonUpdate) {
-        if (Test-Path $envDir) { Remove-Item $envDir -Recurse -Force }
+        Write-Log "Preparing to install/update Python environment in '$envDir'..."
+        if (Test-Path $envDir) {
+            Write-Log "Removing existing env directory: '$envDir'"
+            Remove-Item $envDir -Recurse -Force
+        }
         New-Item -ItemType Directory -Path $envDir | Out-Null
-        Write-Output "Downloading embeddable Python $requiredPythonVersion..."
+        Write-Log "Downloading embeddable Python $requiredPythonVersion (amd64)..."
         $zipUrl = "https://www.python.org/ftp/python/$requiredPythonVersion/python-$requiredPythonVersion-embed-amd64.zip"
-        Write-Output "Downloading from URL: $zipUrl"
+        Write-Log "Downloading from URL: $zipUrl"
         $zipFile = Join-Path $envDir "python-embed.zip"
-        Invoke-WebRequest -Uri $zipUrl -OutFile $zipFile
-        Write-Output "Extracting Python embeddable package..."
-        Expand-Archive -Path $zipFile -DestinationPath $envDir -Force
-        Remove-Item $zipFile
-        Write-Output "Bundled Python updated."
-        
-        $customPthFile = Join-Path $targetDir "SetupFiles\custom_pth.txt"
-        if (Test-Path $customPthFile) {
-            $pthFile = Get-ChildItem -Path $envDir -Filter "*._pth" | Select-Object -First 1
-            if ($pthFile) {
-                Write-Output "Replacing _pth file '$($pthFile.FullName)' with custom version from '$customPthFile'..."
-                $customContent = Get-Content $customPthFile -Raw
-                Set-Content -Path $pthFile.FullName -Value $customContent -Encoding ASCII
-                Write-Output "New _pth file content:"
-                Write-Output (Get-Content $pthFile.FullName -Raw)
+
+        try {
+            Invoke-WebRequest -Uri $zipUrl -OutFile $zipFile -UseBasicParsing
+        } catch {
+            throw "FATAL: Failed to download Python embeddable package from '$zipUrl'. Error: $_"
+        }
+
+        Write-Log "Extracting Python embeddable package..."
+        try {
+            Expand-Archive -Path $zipFile -DestinationPath $envDir -Force
+        } catch {
+             throw "FATAL: Failed to extract Python zip file '$zipFile'. Error: $_"
+        } finally {
+             if (Test-Path $zipFile) { Remove-Item $zipFile }
+        }
+        Write-Log "Bundled Python downloaded and extracted."
+
+        # Apply custom ._pth file if it exists in SetupFiles
+        $customPthSource = Join-Path $scriptDir "custom_pth.txt"
+        if (Test-Path $customPthSource) {
+            $pthFileDest = Get-ChildItem -Path $envDir -Filter "*._pth" | Select-Object -First 1
+            if ($pthFileDest) {
+                Write-Log "Replacing _pth file '$($pthFileDest.FullName)' with custom version from '$customPthSource'..."
+                try {
+                    $customContent = Get-Content $customPthSource -Raw
+                    Set-Content -Path $pthFileDest.FullName -Value $customContent -Encoding ASCII -Force
+                    Write-Log "New _pth file content:"
+                    # Log multi-line content appropriately
+                    Get-Content $pthFileDest.FullName | ForEach-Object { Write-Log "  $_" }
+                } catch {
+                     Write-Log "Failed to replace ._pth file. Error: $_" -Level WARN
+                }
             }
             else {
-                Write-Output "No _pth file found in '$envDir'."
+                Write-Log "No default ._pth file found in '$envDir' to replace." -Level WARN
             }
+        } else {
+             Write-Log "No custom_pth.txt found in '$scriptDir', using default Python ._pth file."
         }
     }
 
     # --- Ensure pip is installed in the env ---
-    Write-Output "Checking if pip is installed..."
+    Write-Log "Checking if pip is installed in '$pythonExe'..."
     $pipVersion = ""
     try {
-        $pipVersion = & $pythonExe -m pip --version 2>&1
+        $pipCmdOutput = & $pythonExe -m pip --version 2>&1
+        if ($LASTEXITCODE -eq 0 -and $pipCmdOutput -match "pip") {
+             $pipVersion = $pipCmdOutput.Trim() # Trim potential whitespace
+        } else {
+            Write-Log "pip check command output (ExitCode $LASTEXITCODE): $pipCmdOutput" -Level WARN
+        }
     } catch {
-        Write-Output "pip is not installed."
+        Write-Log "pip check failed with exception: $_" -Level WARN
     }
-    if ($pipVersion -notmatch "pip") {
-        Write-Output "Attempting to install pip..."
-        $env:PYTHONHOME = $envDir
-        $env:PYTHONPATH = $envDir
+
+    if (-not $pipVersion) {
+        Write-Log "pip is not installed or check failed. Attempting to install pip..."
         $getPipUrl = "https://bootstrap.pypa.io/get-pip.py"
         $getPipFile = Join-Path $envDir "get-pip.py"
-        Write-Output "Downloading get-pip.py from $getPipUrl..."
-        Invoke-WebRequest -Uri $getPipUrl -OutFile $getPipFile
-        Write-Output "Running get-pip.py..."
-        & $pythonExe $getPipFile
-        Remove-Item $getPipFile
-        Write-Output "Finished installing pip."
-        $pipVersion = & $pythonExe -m pip --version 2>&1
-        if ($pipVersion -notmatch "pip") { throw "Failed to install pip." }
-        else { Write-Output "pip installed successfully: $pipVersion" }
+        Write-Log "Downloading get-pip.py from $getPipUrl..."
+        try {
+            Invoke-WebRequest -Uri $getPipUrl -OutFile $getPipFile -UseBasicParsing
+        } catch {
+            throw "FATAL: Failed to download get-pip.py from '$getPipUrl'. Error: $_"
+        }
+
+        Write-Log "Running get-pip.py using '$pythonExe'..."
+        try {
+            # Capture output/errors from get-pip.py
+            $getPipOutput = & $pythonExe $getPipFile --no-warn-script-location 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                 Write-Log "get-pip.py execution failed (ExitCode $LASTEXITCODE). Output:" -Level ERROR
+                 $getPipOutput | ForEach-Object { Write-Log "  $_" -Level ERROR }
+                 throw "get-pip.py execution failed."
+            } else {
+                 Write-Log "get-pip.py executed. Output:"
+                 $getPipOutput | ForEach-Object { Write-Log "  $_" }
+            }
+
+            # Verify installation
+            $pipVersion = (& $pythonExe -m pip --version 2>&1).Trim()
+            if ($LASTEXITCODE -ne 0 -or $pipVersion -notmatch "pip") {
+                throw "pip installation command finished, but verification failed. Output: $pipVersion"
+            }
+            Write-Log "pip installed successfully: $pipVersion"
+        } catch {
+            # Catch block handles logging the specific error
+            throw "FATAL: Failed to install pip using get-pip.py. Error: $_"
+        } finally {
+            if (Test-Path $getPipFile) { Remove-Item $getPipFile }
+        }
     }
     else {
-        Write-Output "pip is already installed: $pipVersion"
+        Write-Log "pip is already installed: $pipVersion"
     }
 
-    # --- Update Dependencies ---
-    Write-Output "Installing/updating dependencies from $reqFile..."
-    $deps = Get-Content $reqFile | Where-Object { $_ -notmatch "^\s*python\s*==" }
+    # --- Update Dependencies using pip ---
+    Write-Log "Installing/updating dependencies from '$reqFile'..."
+    $deps = Get-Content $reqFile | Where-Object { $_.Trim() -ne '' -and $_ -notmatch "^\s*#.*" -and $_ -notmatch "^\s*python\s*==" }
+
     if ($deps) {
         $tempReqFile = Join-Path $targetDir "temp_requirements.txt"
-        $deps | Out-File -Encoding ASCII $tempReqFile
-        Write-Output "Running: & $pythonExe -m pip install -r $tempReqFile"
-        & $pythonExe -m pip install -r $tempReqFile
-        Remove-Item $tempReqFile
-        Write-Output "Dependencies updated."
+        try {
+            $deps | Out-File -Encoding UTF8 -FilePath $tempReqFile
+            $pipCommand = "& `"$pythonExe`" -m pip install --no-cache-dir --no-warn-script-location -r `"$tempReqFile`""
+            Write-Log "Running: $pipCommand"
+
+            # Capture output/errors from pip install
+            $pipInstallOutput = & $pythonExe -m pip install --no-cache-dir --no-warn-script-location -r $tempReqFile 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                 Write-Log "pip install command failed (ExitCode $LASTEXITCODE). Output:" -Level ERROR
+                 $pipInstallOutput | ForEach-Object { Write-Log "  $_" -Level ERROR }
+                 throw "pip install command failed."
+            } else {
+                 Write-Log "pip install executed. Output:"
+                 $pipInstallOutput | ForEach-Object { Write-Log "  $_" }
+                 Write-Log "Dependencies updated successfully."
+            }
+        } catch {
+            throw "FATAL: Failed to install dependencies from '$tempReqFile'. Error: $_"
+        } finally {
+            if (Test-Path $tempReqFile) { Remove-Item $tempReqFile }
+        }
     }
     else {
-        Write-Output "No dependencies to install/update."
+        Write-Log "No dependencies found in '$reqFile' (excluding python line and comments)."
     }
 
-    # --- Re-generate run_app.bat based on installed metadata ---
-    Generate-RunScript $targetDir
+    # --- Final Steps ---
+    Write-Log "-----------------------------------------------------"
+    Write-Log "Setup/Update complete for $newAppName version $newVersion."
+    Write-Log "Installation location: $targetDir"
+    Write-Log "-----------------------------------------------------"
 
-    Write-Output "Update complete. Application version updated to $newVersion."
-    Write-Output "Installation/Update is complete at: $targetDir"
-
-    Read-Host -Prompt "Press Enter to exit"
-    
 } catch {
-    $errorMessage = "ERROR: $($_.Exception.Message)`r`n$($_.ScriptStackTrace)"
-    $errorMessage | Out-File -FilePath $ErrorLogPath -Append
-    Write-Output $errorMessage
-    Write-Output "Installation failed. Error log saved to: $ErrorLogPath"
-    Read-Host -Prompt "Press Enter to exit"
+    # --- Log the final error ---
+    $errorMessage = @"
+-----------------------------------------------------
+FATAL ERROR during installation/update:
+$($_.Exception.Message)
+
+Script Stack Trace:
+$($_.ScriptStackTrace)
+
+Failed Command:
+$($_.InvocationInfo.Line)
+
+Target Object:
+$($_.TargetObject)
+-----------------------------------------------------
+"@
+    # Attempt to write to the main log file first
+    Write-Log $errorMessage -Level FATAL
+
+    # Also write to the fallback temp error log just in case
+    try {
+        $errorMessage | Out-File -FilePath $EarlyErrorLogPath -Append -Encoding UTF8
+        Write-Host "FATAL ERROR occurred. Details logged to '$LogFilePath' (and potentially '$EarlyErrorLogPath')."
+    } catch {
+        Write-Host "FATAL ERROR occurred, and could not write to fallback log '$EarlyErrorLogPath'."
+        Write-Host $errorMessage
+    }
+
+    # Signal failure to Inno Setup (non-zero exit code)
     exit 1
 }
+
+# Success
+Write-Log "Setup script completed successfully."
+exit 0

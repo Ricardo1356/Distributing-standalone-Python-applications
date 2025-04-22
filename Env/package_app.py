@@ -1,219 +1,121 @@
-import os
-import re
-import zipfile
-import argparse
-import tempfile
-import shutil
+#!/usr/bin/env python3
+"""
+package_app.py   –   build a *folder* ready for ISCC
+┌────────────────────────────────────────────────────────────┐
+│  <out‑dir>/                                               │
+│     SetupFiles/   boot.py  metadata.txt  custom_pth.txt   │
+│     setup.bat                                              │
+│     <YourProject>/  (your whole source tree, patched)      │
+└────────────────────────────────────────────────────────────┘
+No ZIP is produced; ISCC can point straight at <out‑dir>.
+"""
 
-def get_python_version(req_file):
-    """Reads requirements.txt for 'python==X.Y.Z' (defaults to 3.10.0)."""
-    version = "3.10.0"
-    try:
-        with open(req_file, "r", encoding="utf-8") as f:
-            for line in f:
-                match = re.search(r"python==([\d\.]+)", line, re.IGNORECASE)
-                if match:
-                    version = match.group(1)
-                    break
-    except Exception as e:
-        print(f"Error reading {req_file}: {e}")
-    return version
+import argparse, os, re, shutil, sys
+from pathlib import Path
 
-def generate_custom_pth(python_version):
-    """Generates the custom _pth file content."""
-    parts = python_version.split(".")
-    if len(parts) >= 2:
-        base = "python" + parts[0] + parts[1]
-    else:
-        base = "python" + python_version.replace(".", "")
-    content = f"{base}.zip\nLib\n.\nimport site\n"
-    return content
+# ───────────────────── helpers ─────────────────────
+def get_python_version(req: Path) -> str:
+    """Return python==X.Y.Z from requirements.txt or 3.10.0."""
+    pat = re.compile(r"python==([\d.]+)", re.I)
+    for line in req.read_text(encoding="utf-8").splitlines():
+        m = pat.search(line)
+        if m:
+            return m.group(1)
+    return "3.10.0"
 
-def create_boot_file(target_folder, app_folder_name, entry_file):
-    """
-    Creates boot.py in the target folder.
-    This bootstrap script adjusts sys.path to include the parent folder
-    (the installation folder) so that the application package is found,
-    and then runs the entry module.
-    """
-    boot_path = os.path.join(target_folder, "boot.py")
-    entry_module = os.path.splitext(entry_file)[0]
-    boot_content = f'''import sys, os, runpy
+def generate_custom_pth(ver: str) -> str:
+    parts = ver.split(".")
+    base  = "python" + parts[0] + parts[1] if len(parts) >= 2 else "python" + ver.replace(".","")
+    return f"{base}.zip\nLib\n.\nimport site\n"
 
-# Set install_dir to the parent of this file (i.e., the installation folder).s
-install_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if install_dir not in sys.path:
-    sys.path.insert(0, install_dir)
-
-# Run the entry module using runpy.
-runpy.run_module("{app_folder_name}.{entry_module}", run_name="__main__")
+def create_boot_py(internal_dir: Path, app_pkg: str, entry: str) -> None: # Renamed parameter
+    mod = Path(entry.replace("\\", ".").replace("/", ".")).with_suffix("")
+    # Adjust path relative to boot.py location inside _internal
+    boot = f'''import sys, os, runpy
+inst = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+app  = os.path.join(inst, "{app_pkg}")
+for p in (inst, app):
+    sys.path.insert(0, p) if p not in sys.path else None
+runpy.run_module("{app_pkg}.{mod}", run_name="__main__")
 '''
-    with open(boot_path, "w", encoding="utf-8") as f:
-        f.write(boot_content)
+    (internal_dir/"boot.py").write_text(boot, encoding="utf-8") # Write to internal_dir
 
-def copy_installer_scripts(target_folder, package_dir):
-    """
-    Copies installer scripts (setup.ps1 and setup_gui.ps1, if present) from package_dir 
-    into the target_folder.
-    """
-    installers = ["setup.ps1", "setup_gui.ps1"]
-    for inst in installers:
-        src = os.path.join(package_dir, inst)
-        if os.path.isfile(src):
-            shutil.copy2(src, target_folder)
-        else:
-            print(f"Warning: {inst} not found in {package_dir}")
+def ensure_pkg_tree(root: Path) -> None:
+    for cur,_,files in os.walk(root):
+        if any(f.endswith(".py") for f in files):
+            ip = Path(cur, "__init__.py")
+            if not ip.exists(): ip.touch()
 
-def create_package_structure(temp_dir, top_level, app_folder, package_dir,
-                             custom_pth_content, app_name, entry_file, app_version):
-    """
-    Creates a folder structure like:
-    
-      temp_dir/
-         <top_level>/          <-- This folder will be named as your app (e.g., "Test GUI")
-             setup.bat        <-- Double-clickable batch file
-             SetupFiles/      <-- Contains installer files
-                 boot.py
-                 custom_pth.txt
-                 metadata.txt
-                 setup.ps1
-                 setup_gui.ps1   (if exists)
-             <app_folder>/    <-- The entire application folder copied over
-    """
-    top_level_path = os.path.join(temp_dir, top_level)
-    os.makedirs(top_level_path, exist_ok=True)
-    
-    # Create subfolder for installer files.
-    setup_folder = os.path.join(top_level_path, "SetupFiles")
-    os.makedirs(setup_folder, exist_ok=True)
-    
-    # Copy installer scripts (setup.ps1, setup_gui.ps1) from package_dir to SetupFiles.
-    copy_installer_scripts(setup_folder, package_dir)
-    
-    # Write custom_pth.txt into SetupFiles.
-    custom_pth_path = os.path.join(setup_folder, "custom_pth.txt")
-    with open(custom_pth_path, "w", encoding="ascii") as f:
-        f.write(custom_pth_content)
-    
-    # Write metadata.txt into SetupFiles.
-    app_basename = os.path.basename(os.path.abspath(app_folder))
-    metadata_path = os.path.join(setup_folder, "metadata.txt")
-    with open(metadata_path, "w", encoding="utf-8") as f:
-        f.write(f"AppName={app_name}\n")
-        f.write(f"AppFolder={app_basename}\n")
-        f.write(f"EntryFile={entry_file}\n")
-        f.write(f"Version={app_version}\n")
-    
-    # Create boot.py in SetupFiles.
-    create_boot_file(setup_folder, app_basename, entry_file)
-    
-    # Copy the entire application folder into top_level.
-    dest_app_path = os.path.join(top_level_path, app_basename)
-    shutil.copytree(app_folder, dest_app_path)
-    
-    # Patch the application folder: add __init__.py if missing.
-    init_file = os.path.join(dest_app_path, "__init__.py")
-    if not os.path.exists(init_file):
-        with open(init_file, "w", encoding="utf-8") as f:
-            f.write("")
-    
-    # Create setup.bat in the top_level folder.
-    setup_bat_path = os.path.join(top_level_path, "setup.bat")
-    bat_content = (
-        '@echo off\r\n'
-        'powershell.exe -ExecutionPolicy Bypass -NoProfile -File "%~dp0\\SetupFiles\\setup.ps1"\r\n'
-        'pause\r\n'
-    )
-    with open(setup_bat_path, "w", encoding="ascii") as f:
-        f.write(bat_content)
-    
-    return top_level_path
+# ───────────────────── main build ─────────────────────
+def build(out_dir: Path,
+          src_dir: Path,
+          app_name: str,
+          entry_file: str,
+          version: str) -> None:
 
-def zip_directory(source_dir, output_zip):
-    """
-    Zips the contents of source_dir into output_zip,
-    preserving source_dir as the top-level folder.
-    """
-    parent_of_source = os.path.dirname(source_dir)
-    with zipfile.ZipFile(output_zip, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        for root, dirs, files in os.walk(source_dir):
-            for file in files:
-                abs_file = os.path.join(root, file)
-                rel_path = os.path.relpath(abs_file, parent_of_source)
-                zipf.write(abs_file, rel_path)
-    print(f"Packaged project into {output_zip}")
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True)
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Package the application with installer files, metadata, a custom _pth file, and a bootstrap script into a ZIP archive."
-    )
-    parser.add_argument("app_folder", help="Path to the application folder (must contain requirements.txt)")
-    parser.add_argument(
-        "-n", "--name",
-        default="python_app_package.zip",
-        help="Output ZIP file name (default: python_app_package.zip)"
-    )
-    parser.add_argument(
-        "--app-name",
-        default="MyApp",
-        help="Logical name of the application (default: MyApp)"
-    )
-    parser.add_argument(
-        "--entry-file",
-        default="main.py",
-        help="Relative path (within your app_folder) of the script to run (default: main.py)"
-    )
-    parser.add_argument(
-        "--version",
-        default="1.0.0",
-        help="Version of the application (default: 1.0.0)"
-    )
+    # Create the _internal directory instead of SetupFiles
+    internal_dir = out_dir / "_internal"
+    internal_dir.mkdir()
 
-    args = parser.parse_args()
+    # Copy installer scripts into _internal
+    here = Path(__file__).parent
+    for fname in ("setup.ps1", "setup_gui.ps1"): # Add other setup files if needed
+        f = here / fname
+        if f.is_file():
+            shutil.copy2(f, internal_dir)
 
-    # Validate the app folder.
-    app_folder = os.path.abspath(args.app_folder)
-    if not os.path.isdir(app_folder):
-        print(f"Error: The specified application folder does not exist: {app_folder}")
-        return
+    # Create metadata & boot script inside _internal
+    (internal_dir/"metadata.txt").write_text(
+        f"AppName={app_name}\n"
+        f"AppFolder={src_dir.name}\n"
+        f"EntryFile={entry_file}\n"
+        f"Version={version}\n", encoding="utf-8")
 
-    # Validate requirements.txt exists.
-    req_file = os.path.join(app_folder, "requirements.txt")
-    if not os.path.isfile(req_file):
-        print(f"Error: requirements.txt not found in: {app_folder}")
-        return
+    create_boot_py(internal_dir, src_dir.name, entry_file) # Pass internal_dir
 
-    # Determine Python version from requirements.txt.
-    python_version = get_python_version(req_file)
-    print(f"Determined Python version: {python_version}")
+    # Generate custom pth file inside _internal if needed
+    py_ver = get_python_version(src_dir / "requirements.txt")
+    (internal_dir/"custom_pth.txt").write_text(generate_custom_pth(py_ver), encoding="ascii")
 
-    # Generate custom _pth file content.
-    custom_pth_content = generate_custom_pth(python_version)
-    print("Generated custom _pth content:")
-    print(custom_pth_content)
+    # Copy the actual application code to the root of out_dir
+    app_dest = out_dir / src_dir.name
+    shutil.copytree(src_dir, app_dest, ignore=shutil.ignore_patterns('__pycache__'))
+    ensure_pkg_tree(app_dest)
 
-    # Get the directory of this packaging script.
-    package_dir = os.path.dirname(os.path.abspath(__file__))
+    # Optional: Copy icon file into _internal
+    icon_src = here / f"{app_name}.ico" # Assuming icon is next to build scripts
+    if icon_src.exists():
+        shutil.copy2(icon_src, internal_dir / f"{app_name}.ico")
+    else:
+         # If you store the icon elsewhere, adjust the source path
+         print(f"Warning: Icon file '{icon_src}' not found. Skipping icon copy.")
 
-    # Final ZIP name.
-    zip_name = args.name if args.name.lower().endswith(".zip") else args.name + ".zip"
-    top_level = os.path.splitext(os.path.basename(zip_name))[0]
+    print(f"✓ Build folder ready → {out_dir}")
 
-    with tempfile.TemporaryDirectory() as temp_dir:
-        package_structure_path = create_package_structure(
-            temp_dir,
-            top_level,
-            app_folder,
-            package_dir,
-            custom_pth_content,
-            app_name=args.app_name,
-            entry_file=args.entry_file,
-            app_version=args.version
-        )
-        output_zip = os.path.join(package_dir, zip_name)
-        zip_directory(package_structure_path, output_zip)
+# ───────────────────── CLI ─────────────────────
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Create build folder for ISCC.")
+    ap.add_argument("app_folder", help="Path to project with requirements.txt")
+    ap.add_argument("--app-name",   default=None, help="Default: folder name")
+    ap.add_argument("--entry-file", default="core.py")
+    ap.add_argument("--version",    default="1.0.0")
+    ap.add_argument("--out-dir",
+                    help="Where to place the build folder "
+                         "(default: _temp/<AppName>_pkg beside script)")
+    args = ap.parse_args()
 
-    print("Packaging complete.")
+    src = Path(args.app_folder).resolve()
+    if not src.is_dir():
+        sys.exit("ERROR: app_folder not found")
+
+    out_base = Path(args.out_dir) if args.out_dir else \
+               Path("_temp", f"{args.app_name or src.name}_pkg")
+    build(out_base.resolve(), src,
+          args.app_name or src.name, args.entry_file, args.version)
 
 if __name__ == "__main__":
     main()

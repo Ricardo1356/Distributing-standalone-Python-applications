@@ -1,0 +1,24 @@
+# Ignore the default output directory for the installer
+/dist/
+/Output/
+
+# Ignore Python cache files
+__pycache__/
+*.py[cod]
+
+# Ignore temporary files created by setup.ps1
+*.tmp
+
+# Ignore log files created by setup.ps1 in the root (if any, though they should be in dist/)
+# installation_log_*.txt
+
+# Ignore virtual environment folders (if you create one in the root)
+/Env/ # Assuming 'Env' is your virtual environment folder name, adjust if different
+/venv/
+/.venv/
+
+# Ignore IDE/Editor specific files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace

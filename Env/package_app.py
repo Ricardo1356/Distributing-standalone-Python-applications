@@ -28,8 +28,9 @@ def generate_custom_pth(ver: str) -> str:
     base  = "python" + parts[0] + parts[1] if len(parts) >= 2 else "python" + ver.replace(".","")
     return f"{base}.zip\nLib\n.\nimport site\n"
 
-def create_boot_py(setup_dir: Path, app_pkg: str, entry: str) -> None:
+def create_boot_py(internal_dir: Path, app_pkg: str, entry: str) -> None: # Renamed parameter
     mod = Path(entry.replace("\\", ".").replace("/", ".")).with_suffix("")
+    # Adjust path relative to boot.py location inside _internal
     boot = f'''import sys, os, runpy
 inst = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 app  = os.path.join(inst, "{app_pkg}")
@@ -37,7 +38,7 @@ for p in (inst, app):
     sys.path.insert(0, p) if p not in sys.path else None
 runpy.run_module("{app_pkg}.{mod}", run_name="__main__")
 '''
-    (setup_dir/"boot.py").write_text(boot, encoding="utf-8")
+    (internal_dir/"boot.py").write_text(boot, encoding="utf-8") # Write to internal_dir
 
 def ensure_pkg_tree(root: Path) -> None:
     for cur,_,files in os.walk(root):
@@ -56,38 +57,42 @@ def build(out_dir: Path,
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True)
 
-    setup_dir = out_dir / "SetupFiles"
-    setup_dir.mkdir()
+    # Create the _internal directory instead of SetupFiles
+    internal_dir = out_dir / "_internal"
+    internal_dir.mkdir()
 
-    # 1  copy installer scripts that live next to package_app.py
+    # Copy installer scripts into _internal
     here = Path(__file__).parent
-    for fname in ("setup.ps1", "setup_gui.ps1"):
+    for fname in ("setup.ps1", "setup_gui.ps1"): # Add other setup files if needed
         f = here / fname
         if f.is_file():
-            shutil.copy2(f, setup_dir)
+            shutil.copy2(f, internal_dir)
 
-    # 2  metadata & boot
-    (setup_dir/"metadata.txt").write_text(
+    # Create metadata & boot script inside _internal
+    (internal_dir/"metadata.txt").write_text(
         f"AppName={app_name}\n"
         f"AppFolder={src_dir.name}\n"
         f"EntryFile={entry_file}\n"
         f"Version={version}\n", encoding="utf-8")
 
-    create_boot_py(setup_dir, src_dir.name, entry_file)
+    create_boot_py(internal_dir, src_dir.name, entry_file) # Pass internal_dir
 
-    # 3  custom_pth.txt
-    pyver = get_python_version(src_dir/"requirements.txt")
-    (setup_dir/"custom_pth.txt").write_text(generate_custom_pth(pyver), "ascii")
+    # Generate custom pth file inside _internal if needed
+    py_ver = get_python_version(src_dir / "requirements.txt")
+    (internal_dir/"custom_pth.txt").write_text(generate_custom_pth(py_ver), encoding="ascii")
 
-    # 4  copy project tree
-    shutil.copytree(src_dir, out_dir/src_dir.name)
-    ensure_pkg_tree(out_dir/src_dir.name)
+    # Copy the actual application code to the root of out_dir
+    app_dest = out_dir / src_dir.name
+    shutil.copytree(src_dir, app_dest, ignore=shutil.ignore_patterns('__pycache__'))
+    ensure_pkg_tree(app_dest)
 
-    # 5  helper setup.bat
-    (out_dir/"setup.bat").write_text(
-        '@echo off\r\n'
-        'powershell.exe -ExecutionPolicy Bypass -NoProfile -File "%~dp0\\SetupFiles\\setup.ps1"\r\n'
-        'pause\r\n', "ascii")
+    # Optional: Copy icon file into _internal
+    icon_src = here / f"{app_name}.ico" # Assuming icon is next to build scripts
+    if icon_src.exists():
+        shutil.copy2(icon_src, internal_dir / f"{app_name}.ico")
+    else:
+         # If you store the icon elsewhere, adjust the source path
+         print(f"Warning: Icon file '{icon_src}' not found. Skipping icon copy.")
 
     print(f"✓ Build folder ready → {out_dir}")
 

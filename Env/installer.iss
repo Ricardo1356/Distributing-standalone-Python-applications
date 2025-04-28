@@ -6,13 +6,12 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 DefaultDirName={commonpf}\PythonApps\{#AppName}
 DefaultGroupName={#AppName}
-; Include the version in the output installer filename
 OutputBaseFilename={#AppName}-{#AppVersion}-Installer
 Compression=lzma
 SolidCompression=yes
 PrivilegesRequired=admin
-UninstallDisplayIcon={app}\{#AppName}.ico  ; Optional: Specify an icon for the uninstaller
-UninstallDisplayName={#AppName} (Remove Only)
+UninstallDisplayIcon={app}\{#AppName}.ico
+UninstallDisplayName={#AppName}
 
 [Files]
 Source: "{#BuildDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
@@ -21,14 +20,15 @@ Source: "{#BuildDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
 [Run]
 ; Pass the chosen {app} directory as the install path
-Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -NoProfile -File ""{app}\SetupFiles\setup.ps1"" -InstallPath ""{app}"""; Flags: waituntilterminated
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -NoProfile -File ""{app}\SetupFiles\setup.ps1"" -InstallPath ""{app}"""; Flags: waituntilterminated runhidden
 
 [Icons]
 ; Start Menu Shortcut - Use pythonw.exe to avoid console window
 Name: "{group}\{#AppName}"; Filename: "{app}\env\pythonw.exe"; Parameters: """{app}\SetupFiles\boot.py"""; WorkingDir: "{app}"; IconFilename: "{app}\{#AppName}.ico"
 ; Desktop Shortcut (Optional) - Use pythonw.exe to avoid console window
 Name: "{commondesktop}\{#AppName}"; Filename: "{app}\env\pythonw.exe"; Parameters: """{app}\SetupFiles\boot.py"""; WorkingDir: "{app}"; IconFilename: "{app}\{#AppName}.ico"; Tasks: desktopicon
-
+; Shortcut directly in the installation folder
+Name: "{app}\{#AppName}"; Filename: "{app}\env\pythonw.exe"; Parameters: """{app}\SetupFiles\boot.py"""; WorkingDir: "{app}"; IconFilename: "{app}\{#AppName}.ico"
 
 [Tasks]
 ; Add a checkbox during setup to let the user choose whether to create a desktop icon

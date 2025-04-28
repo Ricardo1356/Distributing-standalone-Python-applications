@@ -104,22 +104,6 @@ try {
         }
     }
 
-    function Generate-SetupBat($targetDir) {
-        $batContent = @"
-@echo off
-echo Re-running setup/update...
-powershell.exe -ExecutionPolicy Bypass -NoProfile -File "%~dp0\SetupFiles\setup.ps1" -InstallPath "%~dp0"
-pause
-"@
-        $batPath = Join-Path $targetDir "setup.bat"
-        try {
-            $batContent | Out-File -Encoding ASCII -FilePath $batPath -Force
-            Write-Log "Generated setup helper batch file at '$batPath'."
-        } catch {
-            Write-Log "Could not generate setup.bat in '$targetDir'. Error: $_" -Level WARN
-        }
-    }
-
     # Determine the folder where this script is located (within SetupFiles).
     $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
     Write-Log "Script directory (SetupFiles) is: $scriptDir"
@@ -167,9 +151,6 @@ pause
 
     # --- Copy Package Contents ---
     Write-Log "Skipping file copy step as Inno Setup handles initial file placement."
-
-    # --- Generate setup.bat helper ---
-    Generate-SetupBat $targetDir
 
     # --- Determine required Python version from the requirements.txt ---
     $appPath = Join-Path -Path $targetDir -ChildPath $appFolderName

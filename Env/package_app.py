@@ -38,6 +38,40 @@ for p in (inst, app):
 runpy.run_module("{app_pkg}.{mod}", run_name="__main__")
 '''
     (setup_dir/"boot.py").write_text(boot, encoding="utf-8")
+    
+def create_boot_py(setup_dir: Path, app_pkg: str, entry: str) -> None:
+    """Creates the boot.py script inside SetupFiles."""
+    mod = Path(entry.replace("\\", ".").replace("/", ".")).with_suffix("")
+    # boot.py is in SetupFiles. It needs to find the install root ('..')
+    # and the app code ('../<app_pkg>') and env ('../Env') relative to itself.
+    boot = f'''import sys, os, runpy
+try:
+    script_dir = os.path.dirname(__file__)
+    install_root = os.path.abspath(os.path.join(script_dir, ".."))
+    app_code_path = os.path.join(install_root, "{app_pkg}")
+    env_path = os.path.join(install_root, "Env") # Changed to Env
+    site_packages = os.path.join(env_path, "Lib", "site-packages")
+
+    paths_to_add = [app_code_path, site_packages, env_path, install_root]
+    for p in reversed(paths_to_add): # Reverse to prepend in the desired order
+        if os.path.exists(p) and p not in sys.path:
+            sys.path.insert(0, p)
+
+    os.environ["MYAPP_INSTALL_ROOT"] = install_root # Example variable name
+
+    runpy.run_module("{app_pkg}.{mod}", run_name="__main__")
+
+except Exception as e:
+    print(f"FATAL ERROR: Failed to start application: {{e}}", file=sys.stderr)
+    # Optionally, write to a log file in a known location like %TEMP%
+    # temp_log = os.path.join(os.environ.get('TEMP', '.'), 'myapp_boot_error.log')
+    # with open(temp_log, 'a', encoding='utf-8') as f:
+    #     import traceback, datetime
+    #     f.write(f"Timestamp: {{datetime.datetime.now()}}\\n")
+    #     f.write(traceback.format_exc() + '\\n')
+    sys.exit(1)
+'''
+    (setup_dir/"boot.py").write_text(boot, encoding="utf-8")
 
 def ensure_pkg_tree(root: Path) -> None:
     for cur,_,files in os.walk(root):
@@ -48,7 +82,7 @@ def ensure_pkg_tree(root: Path) -> None:
 # ───────────────────── main build ─────────────────────
 def build(out_dir: Path,
           src_dir: Path,
-          app_name: str,
+          app_name: str, # This is the name we want for the app folder
           entry_file: str,
           version: str) -> None:
 
@@ -59,9 +93,9 @@ def build(out_dir: Path,
     setup_dir = out_dir / "SetupFiles"
     setup_dir.mkdir()
 
-    # 1  copy installer scripts that live next to package_app.py
+    # 1  copy installer scripts
     here = Path(__file__).parent
-    for fname in ("setup.ps1", "setup_gui.ps1"):
+    for fname in ("setup.ps1", "setup_gui.ps1"): # Add other setup files if needed
         f = here / fname
         if f.is_file():
             shutil.copy2(f, setup_dir)
@@ -69,24 +103,25 @@ def build(out_dir: Path,
     # 2  metadata & boot
     (setup_dir/"metadata.txt").write_text(
         f"AppName={app_name}\n"
-        f"AppFolder={src_dir.name}\n"
+        f"AppFolder={app_name}\n" # Use app_name for the folder name
         f"EntryFile={entry_file}\n"
         f"Version={version}\n", encoding="utf-8")
 
-    create_boot_py(setup_dir, src_dir.name, entry_file)
+    create_boot_py(setup_dir, app_name, entry_file) # Pass app_name as the package name
 
     # 3  custom_pth.txt
     pyver = get_python_version(src_dir/"requirements.txt")
     (setup_dir/"custom_pth.txt").write_text(generate_custom_pth(pyver), "ascii")
 
-    # 4  copy project tree
-    shutil.copytree(src_dir, out_dir/src_dir.name)
-    ensure_pkg_tree(out_dir/src_dir.name)
+    # 4  copy project tree into the correctly named folder
+    app_code_dest = out_dir / app_name # Use app_name for the destination folder
+    shutil.copytree(src_dir, app_code_dest, ignore=shutil.ignore_patterns('__pycache__', '*.pyc')) # Copy to app_name folder
+    ensure_pkg_tree(app_code_dest) # Ensure __init__.py in the copied code
 
-    # 5  helper setup.bat
-    (out_dir/"setup.bat").write_text(
+    # 5  helper setup.bat (Place inside SetupFiles)
+    (setup_dir/"setup.bat").write_text(
         '@echo off\r\n'
-        'powershell.exe -ExecutionPolicy Bypass -NoProfile -File "%~dp0\\SetupFiles\\setup.ps1"\r\n'
+        'powershell.exe -ExecutionPolicy Bypass -NoProfile -File "%~dp0\\setup.ps1" -InstallPath "%~dp0\\.."\r\n'
         'pause\r\n', "ascii")
 
     print(f"✓ Build folder ready → {out_dir}")

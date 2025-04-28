@@ -55,8 +55,10 @@ try {
     } else {
         # Use the provided path, ensure it's absolute
         $targetDir = Resolve-Path -Path $InstallPath
+
         # --- Define the main log file path NOW ---
-        $LogFilePath = Join-Path $targetDir "setup_log.txt"
+        $timestampForLog = Get-Date -Format "yyyyMMdd-HHmmss" # Use a file-system friendly format
+        $LogFilePath = Join-Path $targetDir "InstallationLog_$timestampForLog.txt" # Changed filename format
 
         # Clear previous log file if it exists
         if (Test-Path $LogFilePath) {
@@ -175,8 +177,8 @@ try {
     }
     Write-Log "Using required Python version: $requiredPythonVersion"
 
-    # --- Check/Install/Update bundled Python in the env folder ---
-    $envDir = Join-Path $targetDir "env"
+    # --- Check/Install/Update bundled Python in the Env folder ---
+    $envDir = Join-Path $targetDir "Env"
     $pythonExe = Join-Path $envDir "python.exe"
     $needPythonUpdate = $false
 
@@ -204,7 +206,7 @@ try {
     if ($needPythonUpdate) {
         Write-Log "Preparing to install/update Python environment in '$envDir'..."
         if (Test-Path $envDir) {
-            Write-Log "Removing existing env directory: '$envDir'"
+            Write-Log "Removing existing Env directory: '$envDir'"
             Remove-Item $envDir -Recurse -Force
         }
         New-Item -ItemType Directory -Path $envDir | Out-Null
@@ -253,7 +255,7 @@ try {
         }
     }
 
-    # --- Ensure pip is installed in the env ---
+    # --- Ensure pip is installed in the Env ---
     Write-Log "Checking if pip is installed in '$pythonExe'..."
     $pipVersion = ""
     try {

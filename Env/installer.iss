@@ -29,7 +29,7 @@ Name: "{group}\{#AppName}"; Filename: "{app}\Env\pythonw.exe"; Parameters: """{a
 ; Desktop Shortcut (Optional) - Use pythonw.exe to avoid console window
 Name: "{commondesktop}\{#AppName}"; Filename: "{app}\Env\pythonw.exe"; Parameters: """{app}\SetupFiles\boot.py"""; WorkingDir: "{app}"; IconFilename: "{app}\{#AppName}.ico"; Tasks: desktopicon
 ; Shortcut directly in the installation folder
-Name: "{app}\{#AppName}"; Filename: "{app}\Env\pythonw.exe"; Parameters: """{app}\SetupFiles\boot.py"""; WorkingDir: "{app}"; IconFilename: "{app}\{#AppName}.ico"
+Name: "{app}\Run {#AppName}"; Filename: "{app}\Env\pythonw.exe"; Parameters: """{app}\SetupFiles\boot.py"""; WorkingDir: "{app}"; IconFilename: "{app}\{#AppName}.ico"
 
 [Tasks]
 ; Add a checkbox during setup to let the user choose whether to create a desktop icon

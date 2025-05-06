@@ -83,7 +83,7 @@ try {
 
     # Determine the folder where this script is located (within SetupFiles).
     $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-    Write-Log "Script directory (SetupFiles) is: $scriptDir"
+    Write-Log "Script directory (_internal) is: $scriptDir"
 
     # Read package metadata from metadata.txt
     $packageMetadataFile = Join-Path $scriptDir "metadata.txt"

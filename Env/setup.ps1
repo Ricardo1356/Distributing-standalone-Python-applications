@@ -49,7 +49,7 @@ try {
     } else {
         $targetDir = Resolve-Path -Path $InstallPath
         $timestampForLog = Get-Date -Format "yyyyMMdd-HHmmss"
-        $LogFilePath = Join-Path $targetDir "InstallationLog_$timestampForLog.txt"
+        $LogFilePath = Join-Path $targetDir "Installation_Log_$timestampForLog.txt"
         if (Test-Path $LogFilePath) {
             Remove-Item $LogFilePath -Force
         }

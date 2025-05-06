@@ -12,7 +12,11 @@ No ZIP is produced; ISCC can point straight at <out‑dir>.
 
 import argparse, os, re, shutil, sys
 from pathlib import Path
-from packaging.version import parse as parse_version # Import for version comparison
+from packaging.version import parse as parse_version
+
+INTERNAL_SCRIPTS_DIR_NAME = "_internal"
+PYTHON_ENV_DIR_NAME = "Env"  # Relative to the application's installation root
+APP_LOGS_DIR_NAME = "logs"    # Relative to the application's installation root
 
 # ───────────────────── helpers ─────────────────────
 def get_python_version(req: Path) -> str:
@@ -62,51 +66,134 @@ def generate_custom_pth(ver: str) -> str:
     base  = "python" + parts[0] + parts[1] if len(parts) >= 2 else "python" + ver.replace(".","")
     return f"{base}.zip\nLib\n.\nimport site\n"
 
-def create_boot_py(setup_dir: Path, app_pkg: str, entry: str) -> None:
-    mod = Path(entry.replace("\\", ".").replace("/", ".")).with_suffix("")
-    boot = f'''import sys, os, runpy
-inst = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-app  = os.path.join(inst, "{app_pkg}")
-for p in (inst, app):
-    sys.path.insert(0, p) if p not in sys.path else None
-runpy.run_module("{app_pkg}.{mod}", run_name="__main__")
-'''
-    (setup_dir/"boot.py").write_text(boot, encoding="utf-8")
+def create_boot_py(internal_scripts_dir: Path, app_pkg_name: str, entry_module_file: str) -> None:
+    """
+    Creates the boot.py script inside the internal scripts directory.
+    The generated boot.py will use global constants for Env and logs directories.
+    """
     
-def create_boot_py(setup_dir: Path, app_pkg: str, entry: str) -> None:
-    """Creates the boot.py script inside SetupFiles."""
-    mod = Path(entry.replace("\\", ".").replace("/", ".")).with_suffix("")
-    # boot.py is in SetupFiles. It needs to find the install root ('..')
-    # and the app code ('../<app_pkg>') and env ('../Env') relative to itself.
-    boot = f'''import sys, os, runpy
+    module_path_str = str(Path(entry_module_file.replace("\\", ".").replace("/", ".")).with_suffix(""))
+
+    # Placeholders for constants that will be embedded into boot.py
+    # These are different from app_pkg_placeholder and module_path_placeholder which are app-specific.
+    # These define standard sub-directory names within the installed application.
+    boot_template = """#!/usr/bin/env python3
+import sys
+import os
+import runpy
+import datetime
+import traceback
+
+# --- Directory Name Constants (from package_app.py) ---
+# These are embedded by package_app.py when creating this boot script.
+PYTHON_ENV_DIR_NAME_CONST = "{python_env_dir_placeholder}"
+APP_LOGS_DIR_NAME_CONST = "{app_logs_dir_placeholder}"
+
+# --- Globals for error reporting (values set by package_app.py via .format()) ---
+_app_pkg_name_for_boot_template = "{app_pkg_placeholder}"
+_entry_module_for_boot_template = "{module_path_placeholder}"
+_install_root_for_boot = None # Will be set in try block
+
 try:
     script_dir = os.path.dirname(__file__)
-    install_root = os.path.abspath(os.path.join(script_dir, ".."))
-    app_code_path = os.path.join(install_root, "{app_pkg}")
-    env_path = os.path.join(install_root, "Env") # Changed to Env
-    site_packages = os.path.join(env_path, "Lib", "site-packages")
+    _install_root_for_boot = os.path.abspath(os.path.join(script_dir, ".."))
+    
+    # Path to the application's code directory (e.g., <install_root>/AppName)
+    app_code_path = os.path.join(_install_root_for_boot, _app_pkg_name_for_boot_template)
+    # Path to the bundled Python environment (e.g., <install_root>/Env)
+    env_path = os.path.join(_install_root_for_boot, PYTHON_ENV_DIR_NAME_CONST)
+    site_packages_path = os.path.join(env_path, "Lib", "site-packages")
 
-    paths_to_add = [app_code_path, site_packages, env_path, install_root]
-    for p in reversed(paths_to_add): # Reverse to prepend in the desired order
-        if os.path.exists(p) and p not in sys.path:
-            sys.path.insert(0, p)
+    paths_to_add = [_install_root_for_boot, app_code_path, site_packages_path, env_path]
+    for p_idx, p_val in enumerate(paths_to_add):
+        if os.path.exists(p_val) and p_val not in sys.path:
+            sys.path.insert(p_idx, p_val)
 
-    os.environ["MYAPP_INSTALL_ROOT"] = install_root # Example variable name
-
-    runpy.run_module("{app_pkg}.{mod}", run_name="__main__")
+    os.environ[f"{{_app_pkg_name_for_boot_template.upper()}}_INSTALL_ROOT"] = _install_root_for_boot # Escaped
+    runpy.run_module(f"{{_app_pkg_name_for_boot_template}}.{{_entry_module_for_boot_template}}", run_name="__main__") # Escaped
 
 except Exception as e:
-    print(f"FATAL ERROR: Failed to start application: {{e}}", file=sys.stderr)
-    # Optionally, write to a log file in a known location like %TEMP%
-    # temp_log = os.path.join(os.environ.get('TEMP', '.'), 'myapp_boot_error.log')
-    # with open(temp_log, 'a', encoding='utf-8') as f:
-    #     import traceback, datetime
-    #     f.write(f"Timestamp: {{datetime.datetime.now()}}\\n")
-    #     f.write(traceback.format_exc() + '\\n')
-    sys.exit(1)
-'''
-    (setup_dir/"boot.py").write_text(boot, encoding="utf-8")
+    timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    error_type = type(e).__name__
+    error_message_detail = str(e)
+    full_traceback = traceback.format_exc()
 
+    log_header = f"--- APPLICATION BOOT ERROR LOG: {{_app_pkg_name_for_boot_template}} ---" # Escaped
+    log_content = f\"\"\"{{{{log_header}}}}  # Double escaped
+Timestamp: {{timestamp_str}}
+Python Version: {{sys.version.split()[0]}} ({{sys.executable}})
+OS: {{sys.platform}}
+Install Root: {{_install_root_for_boot if _install_root_for_boot else 'Unknown'}}
+App Package: {{_app_pkg_name_for_boot_template}}
+Entry Module: {{_entry_module_for_boot_template}}
+
+Error Type: {{error_type}}
+Error Message: {{error_message_detail}}
+
+Full Traceback:
+{{full_traceback}}
+--------------------------------------------------
+\"\"\"
+    log_file_path_str = "Unknown"
+
+    if _install_root_for_boot:
+        # Log directory (e.g., <install_root>/logs)
+        log_dir = os.path.join(_install_root_for_boot, APP_LOGS_DIR_NAME_CONST)
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+            log_file_path_str = os.path.join(log_dir, f"{{_app_pkg_name_for_boot_template}}_boot_error.log") # Escaped
+        except Exception: 
+            temp_dir = os.environ.get('TEMP', os.path.expanduser("~"))
+            os.makedirs(temp_dir, exist_ok=True) 
+            log_file_path_str = os.path.join(temp_dir, f"{{_app_pkg_name_for_boot_template}}_boot_error_fallback.log") # Escaped
+    else: 
+        temp_dir = os.environ.get('TEMP', os.path.expanduser("~"))
+        os.makedirs(temp_dir, exist_ok=True)
+        log_file_path_str = os.path.join(temp_dir, f"{{_app_pkg_name_for_boot_template}}_boot_error_fallback.log") # Escaped
+        
+    logged_to_file_msg = f"Details have been logged to: {{log_file_path_str}}" # Escaped
+    try:
+        with open(log_file_path_str, 'a', encoding='utf-8') as f:
+            f.write(log_content)
+    except Exception as log_write_e:
+        logged_to_file_msg = f"Failed to write to log file '{{log_file_path_str}}'. Error: {{log_write_e}}" # Escaped
+        print(f"FATAL: Could not write to log file '{{log_file_path_str}}': {{log_write_e}}", file=sys.stderr) # Escaped
+
+    user_error_title = f"{{_app_pkg_name_for_boot_template}} - Application Startup Error" # Escaped
+    user_error_summary = f\"\"\"A critical error occurred while starting {{_app_pkg_name_for_boot_template}}.
+
+Error: {{error_type}} - {{error_message_detail}}
+
+{{logged_to_file_msg}}
+
+Please check the log file for a detailed traceback and report this issue.\"\"\"
+
+    print(f"FATAL ERROR in {{_app_pkg_name_for_boot_template}}: {{error_type}} - {{error_message_detail}}. {{logged_to_file_msg}}", file=sys.stderr) # Escaped
+
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, user_error_summary, user_error_title, 0x10 | 0x0)
+        except Exception as mb_e:
+            print(f"\\nCould not display Windows error message box: {{mb_e}}." # Escaped
+                  f" Full error details printed below:", file=sys.stderr) # Escaped
+            print(log_content, file=sys.stderr)
+    else:
+        print(f"\\nFull error details:", file=sys.stderr)
+        print(log_content, file=sys.stderr)
+        
+    sys.exit(1)
+"""
+
+    boot_script_content = boot_template.format(
+        app_pkg_placeholder=app_pkg_name,
+        module_path_placeholder=module_path_str,
+        python_env_dir_placeholder=PYTHON_ENV_DIR_NAME, # Pass constant
+        app_logs_dir_placeholder=APP_LOGS_DIR_NAME       # Pass constant
+    )
+
+    (internal_scripts_dir / "boot.py").write_text(boot_script_content, encoding="utf-8")
+    
 def ensure_pkg_tree(root: Path) -> None:
     for cur,_,files in os.walk(root):
         if any(f.endswith(".py") for f in files):
@@ -116,53 +203,73 @@ def ensure_pkg_tree(root: Path) -> None:
 # ───────────────────── main build ─────────────────────
 def build(out_dir: Path,
           src_dir: Path,
-          app_name: str, # This is the name we want for the app folder
+          app_name: str, 
           entry_file: str,
           version: str) -> None:
+    """
+    Builds the application package into out_dir.
+    The structure will be:
+    <out_dir>/
+        _internal/  (contains setup.ps1, metadata.txt, boot.py, custom_pth.txt, setup.bat)
+        <app_name>/ (contains the application source code)
+    """
+    print(f"Building {app_name} v{version} from {src_dir} into {out_dir}")
 
     if out_dir.exists():
         shutil.rmtree(out_dir)
-    out_dir.mkdir(parents=True)
+    out_dir.mkdir(parents=True, exist_ok=True) # Ensure out_dir itself exists
 
-    setup_dir = out_dir / "SetupFiles"
-    setup_dir.mkdir()
+    # Create the directory for internal scripts and metadata (e.g., <out_dir>/_internal)
+    internal_dir = out_dir / INTERNAL_SCRIPTS_DIR_NAME
+    internal_dir.mkdir(exist_ok=True)
 
-    # 1  copy installer scripts
-    here = Path(__file__).parent
-    for fname in ("setup.ps1", "setup_gui.ps1"): # Add other setup files if needed
-        f = here / fname
-        if f.is_file():
-            shutil.copy2(f, setup_dir)
+    # 1. Copy installer scripts (setup.ps1, etc.) into the internal directory
+    #    These scripts are part of the 'Env' folder where package_app.py resides.
+    current_script_dir = Path(__file__).parent
+    # Note: setup_gui.ps1 was in your original code, keeping it. Remove if not needed.
+    for fname in ("setup.ps1", "setup_gui.ps1"): 
+        source_file = current_script_dir / fname
+        if source_file.is_file():
+            shutil.copy2(source_file, internal_dir / fname)
+        else:
+            print(f"Warning: Script '{fname}' not found in '{current_script_dir}', not copied.")
 
-    # Get Python version before metadata creation
-    pyver = get_python_version(src_dir/"requirements.txt")
+
+    # Get Python version from the application's requirements.txt
+    pyver = get_python_version(src_dir / "requirements.txt")
     
-    # 2  metadata & boot with Python version included
-    (setup_dir/"metadata.txt").write_text(
+    # 2. Create metadata.txt and boot.py in the internal directory
+    (internal_dir / "metadata.txt").write_text(
         f"AppName={app_name}\n"
-        f"AppFolder={app_name}\n"
+        f"AppFolder={app_name}\n" # App's code will be in a subfolder named app_name
         f"EntryFile={entry_file}\n"
         f"Version={version}\n"
         f"PythonVersion={pyver}\n",
         encoding="utf-8")
         
-    create_boot_py(setup_dir, app_name, entry_file)
+    # create_boot_py writes boot.py into internal_dir
+    create_boot_py(internal_dir, app_name, entry_file) 
     
-    # 3  custom_pth.txt (no change to this part)
-    (setup_dir / "custom_pth.txt").write_text(generate_custom_pth(pyver), "ascii")
+    # 3. Create custom_pth.txt in the internal directory
+    (internal_dir / "custom_pth.txt").write_text(generate_custom_pth(pyver), "ascii")
 
-    # 4  copy project tree into the correctly named folder
-    app_code_dest = out_dir / app_name # Use app_name for the destination folder
-    shutil.copytree(src_dir, app_code_dest, ignore=shutil.ignore_patterns('__pycache__', '*.pyc')) # Copy to app_name folder
-    ensure_pkg_tree(app_code_dest) # Ensure __init__.py in the copied code
+    # 4. Copy the application's source code tree into <out_dir>/<app_name>
+    app_code_destination_dir = out_dir / app_name 
+    if app_code_destination_dir.exists(): # Should not happen if out_dir was cleared, but good practice
+        shutil.rmtree(app_code_destination_dir)
+    shutil.copytree(src_dir, app_code_destination_dir, ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '.git', '.vscode'))
+    ensure_pkg_tree(app_code_destination_dir) # Ensure __init__.py files in the copied code
 
-    # 5  helper setup.bat (Place inside SetupFiles)
-    (setup_dir/"setup.bat").write_text(
+    # 5. Create a helper setup.bat in the internal directory
+    (internal_dir / "setup.bat").write_text(
         '@echo off\r\n'
-        'powershell.exe -ExecutionPolicy Bypass -NoProfile -File "%~dp0\\setup.ps1" -InstallPath "%~dp0\\.."\r\n'
-        'pause\r\n', "ascii")
-
-    print(f"✓ Build folder ready → {out_dir}")
+        f'echo Running setup from %~dp0setup.ps1\r\n'
+        f'echo Installation target (parent of _internal) will be %~dp0..\\\r\n'
+        # Ensure InstallPath is quoted and ends with a backslash if it's a directory
+        f'powershell.exe -ExecutionPolicy Bypass -NoProfile -File "%~dp0setup.ps1" -InstallPath "%~dp0..\\"\r\n'
+        'echo Setup script finished. Press any key to exit.\r\n'
+        'pause\r\n', 
+        encoding="ascii")
 
 # ───────────────────── CLI ─────────────────────
 def main() -> None:

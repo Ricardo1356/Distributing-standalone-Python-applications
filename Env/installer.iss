@@ -8,11 +8,12 @@ DefaultDirName={commonpf}\PythonApps\{#AppName}
 DefaultGroupName={#AppName}
 OutputBaseFilename={#AppName}-{#AppVersion}-Installer
 Compression=lzma
+WizardStyle=modern
 SolidCompression=yes
 PrivilegesRequired=admin
 UninstallDisplayIcon={app}\{#AppName}.ico
 UninstallDisplayName={#AppName}
-UninstallFilesDir={app}\SetupFiles
+UninstallFilesDir={app}\_internal
 
 [Files]
 Source: "{#BuildDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
@@ -21,15 +22,15 @@ Source: "{#BuildDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
 [Run]
 ; Pass the chosen {app} directory as the install path
-Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -NoProfile -File ""{app}\SetupFiles\setup.ps1"" -InstallPath ""{app}"""; Flags: waituntilterminated runhidden
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -NoProfile -File ""{app}\_internal\setup.ps1"" -InstallPath ""{app}"""; Flags: waituntilterminated runhidden
 
 [Icons]
 ; Start Menu Shortcut - Use pythonw.exe to avoid console window
-Name: "{group}\{#AppName}"; Filename: "{app}\Env\pythonw.exe"; Parameters: """{app}\SetupFiles\boot.py"""; WorkingDir: "{app}"; IconFilename: "{app}\{#AppName}.ico"
+Name: "{group}\{#AppName}"; Filename: "{app}\Env\pythonw.exe"; Parameters: """{app}\_internal\boot.py"""; WorkingDir: "{app}"; IconFilename: "{app}\{#AppName}.ico"
 ; Desktop Shortcut (Optional) - Use pythonw.exe to avoid console window
-Name: "{commondesktop}\{#AppName}"; Filename: "{app}\Env\pythonw.exe"; Parameters: """{app}\SetupFiles\boot.py"""; WorkingDir: "{app}"; IconFilename: "{app}\{#AppName}.ico"; Tasks: desktopicon
+Name: "{commondesktop}\{#AppName}"; Filename: "{app}\Env\pythonw.exe"; Parameters: """{app}\_internal\boot.py"""; WorkingDir: "{app}"; IconFilename: "{app}\{#AppName}.ico"; Tasks: desktopicon
 ; Shortcut directly in the installation folder
-Name: "{app}\Run {#AppName}"; Filename: "{app}\Env\pythonw.exe"; Parameters: """{app}\SetupFiles\boot.py"""; WorkingDir: "{app}"; IconFilename: "{app}\{#AppName}.ico"
+Name: "{app}\Run {#AppName}"; Filename: "{app}\Env\pythonw.exe"; Parameters: """{app}\_internal\boot.py"""; WorkingDir: "{app}"; IconFilename: "{app}\{#AppName}.ico"
 
 [Tasks]
 ; Add a checkbox during setup to let the user choose whether to create a desktop icon

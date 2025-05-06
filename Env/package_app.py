@@ -15,12 +15,29 @@ from pathlib import Path
 
 # ───────────────────── helpers ─────────────────────
 def get_python_version(req: Path) -> str:
-    """Return python==X.Y.Z from requirements.txt or 3.10.0."""
-    pat = re.compile(r"python==([\d.]+)", re.I)
-    for line in req.read_text(encoding="utf-8").splitlines():
-        m = pat.search(line)
-        if m:
-            return m.group(1)
+    """Return python version from requirements.txt or 3.10.0."""
+    # Check for all possible formats
+    formats = [
+        re.compile(r"python\s*==\s*([\d.]+)", re.I),            # python==3.12.1
+        re.compile(r'python\s*==\s*"([\d.]+)"', re.I),          # python=="3.12.1"
+        re.compile(r'python\s*=\s*"([\d.]+)"', re.I),           # python="3.12.1"
+        re.compile(r'python_version\s*=\s*"([\d.]+)"', re.I)    # python_version="3.12.1"
+    ]
+    
+    try:
+        content = req.read_text(encoding="utf-8").splitlines()
+        for line in content:
+            for pattern in formats:
+                match = pattern.search(line)
+                if match:
+                    version = match.group(1)
+                    print(f"Found Python version in requirements.txt: {version}")
+                    return version
+    except Exception as e:
+        print(f"Warning: Error reading requirements.txt: {e}")
+    
+    # Default if no version found
+    print("No Python version found in requirements.txt. Using default 3.10.0")
     return "3.10.0"
 
 def generate_custom_pth(ver: str) -> str:
@@ -100,18 +117,22 @@ def build(out_dir: Path,
         if f.is_file():
             shutil.copy2(f, setup_dir)
 
-    # 2  metadata & boot
+    # Get Python version before metadata creation
+    pyver = get_python_version(src_dir/"requirements.txt")
+    
+    # 2  metadata & boot with Python version included
     (setup_dir/"metadata.txt").write_text(
         f"AppName={app_name}\n"
-        f"AppFolder={app_name}\n" # Use app_name for the folder name
+        f"AppFolder={app_name}\n"
         f"EntryFile={entry_file}\n"
-        f"Version={version}\n", encoding="utf-8")
-
-    create_boot_py(setup_dir, app_name, entry_file) # Pass app_name as the package name
-
-    # 3  custom_pth.txt
-    pyver = get_python_version(src_dir/"requirements.txt")
-    (setup_dir/"custom_pth.txt").write_text(generate_custom_pth(pyver), "ascii")
+        f"Version={version}\n"
+        f"PythonVersion={pyver}\n",
+        encoding="utf-8")
+        
+    create_boot_py(setup_dir, app_name, entry_file)
+    
+    # 3  custom_pth.txt (no change to this part)
+    (setup_dir / "custom_pth.txt").write_text(generate_custom_pth(pyver), "ascii")
 
     # 4  copy project tree into the correctly named folder
     app_code_dest = out_dir / app_name # Use app_name for the destination folder

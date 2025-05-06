@@ -12,10 +12,13 @@ No ZIP is produced; ISCC can point straight at <out‑dir>.
 
 import argparse, os, re, shutil, sys
 from pathlib import Path
+from packaging.version import parse as parse_version # Import for version comparison
 
 # ───────────────────── helpers ─────────────────────
 def get_python_version(req: Path) -> str:
-    """Return python version from requirements.txt or 3.10.0."""
+    """Return python version from requirements.txt or 3.10.0.
+    Warns if the version is below 3.9.
+    """
     # Check for all possible formats
     formats = [
         re.compile(r"python\s*==\s*([\d.]+)", re.I),            # python==3.12.1
@@ -24,21 +27,35 @@ def get_python_version(req: Path) -> str:
         re.compile(r'python_version\s*=\s*"([\d.]+)"', re.I)    # python_version="3.12.1"
     ]
     
+    min_supported_version = parse_version("3.9")
+    default_version = "3.10.0"
+    found_version_str = None
+
     try:
         content = req.read_text(encoding="utf-8").splitlines()
         for line in content:
             for pattern in formats:
                 match = pattern.search(line)
                 if match:
-                    version = match.group(1)
-                    print(f"Found Python version in requirements.txt: {version}")
-                    return version
+                    version_str = match.group(1)
+                    print(f"Found Python version in requirements.txt: {version_str}")
+                    found_version_str = version_str
+                    
+                    # Check against minimum supported version
+                    parsed_found_version = parse_version(version_str)
+                    if parsed_found_version < min_supported_version:
+                        print(f"WARNING: The Python version {version_str} specified in requirements.txt is below the minimum recommended version {min_supported_version}.")
+                        print(f"         Proceeding with version {version_str}, but compatibility issues may arise.")
+                    return version_str # Return the found version
+    except FileNotFoundError:
+        print(f"Warning: requirements.txt not found at {req}. Using default Python version {default_version}.")
     except Exception as e:
-        print(f"Warning: Error reading requirements.txt: {e}")
+        print(f"Warning: Error reading requirements.txt: {e}. Using default Python version {default_version}.")
     
-    # Default if no version found
-    print("No Python version found in requirements.txt. Using default 3.10.0")
-    return "3.10.0"
+    # Default if no version found or error occurred
+    if not found_version_str: # Only print this if no version was found at all
+        print(f"No Python version found in requirements.txt. Using default {default_version}")
+    return default_version
 
 def generate_custom_pth(ver: str) -> str:
     parts = ver.split(".")

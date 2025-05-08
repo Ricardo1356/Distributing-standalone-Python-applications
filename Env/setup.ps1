@@ -256,6 +256,37 @@ try {
         finally { if (Test-Path $getPipFile) { Remove-Item $getPipFile } }
     } else { Write-Log "pip is already installed: $pipVersion" }
 
+    # --- Upgrade pip, wheel, and conditionally setuptools ---
+    Write-Log "Upgrading/force-reinstall pip, wheel, and setuptools..."
+    try {
+        & $pythonExe -m pip install --upgrade --force-reinstall pip wheel setuptools pep517
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to force-reinstall pip/wheel/setuptools/pep517."
+        }
+        Write-Log "Base build tools installed successfully."
+    } catch {
+        Write-Log "Error reinstalling base build tools: $($_.Exception.Message)" -Level ERROR
+        throw "FATAL: Could not reinstall base build tools. Error: $_"
+    }
+
+    # Now handle Python 3.12 compatibility with older setuptools if needed
+    if (($pyVerMajor -eq 3 -and $pyVerMinor -ge 12) -or $pyVerMajor -gt 3) {
+        Write-Log "Python 3.12+ detected. Reinstalling setuptools<60 for distutils compatibility."
+        try {
+            & $pythonExe -m pip install --upgrade --force-reinstall "setuptools<60"
+            if ($LASTEXITCODE -ne 0) {
+                Write-Log "Failed to reinstall setuptools<60 for Python 3.12+." -Level WARN
+            } else {
+                $currentSetuptoolsVer = (& $pythonExe -m pip show setuptools |
+                    Select-String -Pattern "Version:" |
+                    ForEach-Object { $_.ToString().Split(':')[1].Trim() })
+                Write-Log "Setuptools reinstalled to version '$currentSetuptoolsVer'."
+            }
+        } catch {
+            Write-Log "Error reinstalling legacy setuptools for Python 3.12+: $($_.Exception.Message)" -Level WARN
+        }
+    }
+
    # --- Install/Update Dependencies using pip ---
    # This section always runs to synchronize with the new requirements.txt
    if ($isUpdateScenario) {

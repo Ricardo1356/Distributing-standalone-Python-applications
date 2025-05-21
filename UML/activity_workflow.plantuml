@@ -1,0 +1,27 @@
+@startuml
+start
+:Developer launches build_installer.py\nwith project parameters;
+:package_app.py gathers application source,\ndependency info, and generates\n_internal folder, metadata.txt, boot.py;
+if (Packaging or preparation fails?) then (yes)
+    :Write error to log and abort build;
+    stop
+else (no)
+    :build_installer.py invokes ISCC.exe\n(Inno Setup Compiler) to create installer .exe;
+endif
+
+:End user executes generated installer .exe;
+:Inno Setup runs setup.ps1\nwith installation parameters;
+if (Install path is valid?) then (yes)
+    :setup.ps1 checks installed version,\nremoves old files if needed;
+    :Downloads and extracts embedded Python,\ninstalls pip if missing;
+    if (Python version >= 3.12) then (yes)
+        :Pins setuptools<60 for compatibility;
+    endif
+    :Installs all dependencies from requirements.txt;
+    :Logs successful installation and exits;
+else (no)
+    :Logs fatal error and aborts installation;
+endif
+
+stop
+@enduml

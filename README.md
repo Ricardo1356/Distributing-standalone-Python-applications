@@ -41,7 +41,7 @@ This script is processed by `ISCC.exe` to create the installer. It's a template 
     *   `#define AppVersion "1.0.0"`
     *   `#define BuildDir "path\\to\\staged\\application\\files"` (Path to where `package_app.py` places files for Inno Setup to bundle)
 *   **`[Setup]` Section Parameters (derived from defines or set directly)**:
-    *   `AppId={{<GUID>}-{#AppName}}`: Unique identifier for the application.
+    *   `AppId={{<GUID>}-{#AppName}}`: Unique identifier for the application. **Note:** The `<GUID>` part in `{{<GUID>}-{#AppName}}` (e.g., `ef824ac7-86d2-49a4-8bd5-b8b538fc11fe` as seen in the `installer.iss` template) is an example; developers should generate a new, unique GUID for their own application to avoid conflicts.
     *   `AppName={#AppName}`
     *   `AppVersion={#AppVersion}`
     *   `DefaultDirName={userpf}\\{#AppName}`: Default installation path.

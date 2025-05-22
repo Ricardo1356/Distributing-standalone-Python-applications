@@ -1,0 +1,36 @@
+@startuml
+participant "Inno Setup Runtime" as IE
+participant "setup.ps1" as ESS
+participant "metadata.txt" as Meta
+participant "Embedded Python\n(Env Folder)" as PR
+participant "pip" as PIP
+participant "LogFile" as Log
+
+IE -> ESS: Invoke setup.ps1 with parameters
+ESS -> Log: Initialize logging
+ESS -> Meta: Read application metadata\n(AppName, Version, PythonVersion)
+ESS -> ESS: Compare versions\nDetermine if clean wipe needed
+alt Clean install required
+    ESS -> ESS: Remove old installation files
+    ESS -> Log: Log clean install process
+end
+ESS -> PR: Check if embedded Python exists
+alt Python missing or version mismatch
+    ESS -> PR: Download Python embeddable package
+    ESS -> PR: Extract Python to target folder
+    ESS -> Log: Log Python setup details
+else Python valid
+    ESS -> Log: Skip Python setup
+end
+ESS -> PIP: Check if pip is installed
+alt pip missing
+    ESS -> PIP: Install pip using get-pip.py
+    ESS -> Log: Log pip installation
+end
+ESS -> PIP: Upgrade pip, setuptools, wheel, pep517
+ESS -> PIP: Install dependencies from\nrequirements.txt
+ESS -> Log: Log dependency installation
+ESS -> Log: Write detailed installation steps
+ESS -> IE: Return success/failure status
+
+@enduml

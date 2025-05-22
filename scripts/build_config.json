@@ -1,0 +1,9 @@
+{
+  "appName": "MyApplication",
+  "appVersion": "1.0.0",
+  "entryFile": "core.py",
+  "appFolder": "../example_application",
+  "issPath": "installer.iss",
+  "outputDir": "../Output",
+  "isccPath": null
+}

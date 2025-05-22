@@ -1,0 +1,25 @@
+@startuml
+skinparam componentStyle uml2
+skinparam backgroundColor #FFFFFF
+skinparam ranksep 60
+
+package "Build System (Developer's Machine)" {
+    artifact "Python Application Source Code" as Src #90EE90
+    component "Build Orchestrator Script\n(build_installer.py)" as BO <<Orchestrator>> #90EE90
+    component "Installation Folder Builder\n(package_app.py)" as AP #90EE90
+    component "Inno Setup Compiler\n(ISCC.exe)" as ISC #D3D3D3
+    artifact "Installer Configuration Template\n(installer.iss)" as ISS_Template <<Configuration>> #FFFFE0
+    artifact "Temporary Build Output\n(Build Directory)" as BuildDir #FFDAB9
+    note bottom of BuildDir : Contains: \n- application source code \n- created metadata.txt\n- setup.ps1\n- created boot.py
+    artifact "Generated Installation Package\n(AppName-Version.exe)" as InstallerOutput #FFD700
+}
+
+Src -down-> AP : Supplies application code
+BO --> AP : (1) Initiates packaging process
+BO -down-> ISC : (2) Triggers installer compilation
+ISC .right.> ISS_Template : Loads configuration
+AP -down-> BuildDir : Assembles build contents
+ISC .left.> BuildDir : Retrieves build files
+ISC -down-> InstallerOutput : Generates final installer
+
+@enduml

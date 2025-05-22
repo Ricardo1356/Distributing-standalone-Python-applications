@@ -1,0 +1,25 @@
+@startuml
+skinparam componentStyle uml2
+skinparam backgroundColor #FFFFFF
+skinparam ranksep 60
+
+package "Runtime System (End-User's Machine)" {
+    artifact "Generated Installation Package\n(AppName-Version.exe)" as InstallerOutput #FFD700
+    component "Installation Engine\n(Inno Setup Runtime)" as IE #D3D3D3
+    component "Environment Initialization Script\n(setup.ps1)" as ESS #ADD8E6
+    component "Embedded Python Environment" as PR #90EE90
+    artifact "Application Metadata" as AppMeta #FFFFE0
+    component "Python Application Source Code" as AppSrc #90EE90
+    artifact "Installation Log" as Log #FFDAB9
+    artifact "Application runner\n(boot.py)" as Runner #90EE90
+}
+
+InstallerOutput -down-> IE : User initiates installation
+IE -down-> ESS : Runs configuration script
+ESS .right.> AppMeta : Accesses installation parameters
+ESS -down-> PR : Prepares runtime environment
+ESS -down-> AppSrc : Extracts application files
+ESS -left-> Log : Captures installation activity
+ESS -down-> Runner : Installs startup component
+
+@enduml

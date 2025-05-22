@@ -1,23 +1,22 @@
+# Script parameters
 param(
     [string]$InstallPath = $null,
     [string]$CurrentInstalledVersion = $null,
-    [string]$NewAppVersion = $null,         # Added: Version of the app being installed
-    [string]$AppIdForRegistry = $null      # Added: AppId string for registry key
+    [string]$NewAppVersion = $null,
+    [string]$AppIdForRegistry = $null
 )
 
-# Set silent progress and error preferences.
 $ProgressPreference = 'SilentlyContinue'
 $ErrorActionPreference = 'Stop'
 
-# --- Global variable for the main log file path ---
+# Global variable for the main log file path
 $LogFilePath = $null
 
-# --- Logging Function ---
+# Logging function
 function Write-Log {
     param(
         [Parameter(Mandatory=$true, ValueFromPipeline=$true)]
         [string]$Message,
-
         [ValidateSet("INFO", "WARN", "ERROR", "FATAL")]
         [string]$Level = "INFO"
     )
@@ -25,27 +24,27 @@ function Write-Log {
         $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         $logEntry = "[$timestamp] [$Level] $Message"
 
-        if ($LogFilePath -ne $null) {
+        if ($LogFilePath) {
             try {
                 $logEntry | Out-File -FilePath $LogFilePath -Append -Encoding UTF8 -ErrorAction Stop
             } catch {
-                Write-Host "LOGGING ERROR: Could not write to '$LogFilePath'. Fallback needed. Error: $_"
+                Write-Host "LOGGING ERROR: Could not write to '$LogFilePath'. Error: $_"
                 $fallbackErrorLog = Join-Path $env:TEMP "app_install_fallback_error.log"
                 $logEntry | Out-File -FilePath $fallbackErrorLog -Append -Encoding UTF8
             }
         } else {
-            Write-Host $logEntry # For very early messages before LogFilePath is set
+            Write-Host $logEntry
             $earlyLog = Join-Path $env:TEMP "app_install_very_early_uninitialized.log"
             $logEntry | Out-File -FilePath $earlyLog -Append -Encoding UTF8
         }
     }
 }
 
-# --- Fallback Error Log Path (for very early errors) ---
 $EarlyErrorLogPath = Join-Path $env:TEMP "app_install_early_error_$(Get-Date -Format 'yyyyMMddHHmmss').log"
 
+# Main installation workflow
 try {
-    # --- Determine target installation directory & Initialize LogFilePath ---
+    # Determine target installation directory & initialize log file
     if ($InstallPath -eq $null -or $InstallPath -eq "" -or (-not (Test-Path $InstallPath -PathType Container))) {
         $errorMsg = "FATAL: Invalid or missing installation path provided via -InstallPath parameter. Value received: '$InstallPath'"
         Write-Host $errorMsg
@@ -56,7 +55,7 @@ try {
         $timestampForLog = Get-Date -Format "yyyyMMdd-HHmmss"
         $LogFilePath = Join-Path $targetDir "Installation_Log_$timestampForLog.txt"
         if (Test-Path $LogFilePath) {
-            Remove-Item $LogFilePath -Force # Start with a fresh log for this run
+            Remove-Item $LogFilePath -Force
         }
         Write-Log "Target installation directory confirmed: $targetDir"
         Write-Log "Log file initialized at: $LogFilePath"
@@ -66,7 +65,7 @@ try {
         }
     }
 
-    # --- Start Logging ---
+    # Initialization: log setup and environment context
     Write-Log "=== Starting setup/update process (Simplified - No User Prompts) ==="
     Write-Log "Timestamp: $(Get-Date)"
     Write-Log "Running with user: $env:USERNAME"
@@ -74,21 +73,19 @@ try {
     Write-Log "InstallPath parameter received: '$InstallPath'"
     Write-Log "CurrentInstalledVersion parameter received: '$CurrentInstalledVersion'"
 
-    # --- Helper functions ---
     function Compare-Versions($v1, $v2) {
         try {
             $ver1 = [version]$v1
             $ver2 = [version]$v2
-            return $ver1.CompareTo($ver2) # 0 if equal, -1 if v1 < v2, 1 if v1 > v2
+            return $ver1.CompareTo($ver2)
         }
         catch {
             Write-Log "Version comparison failed for '$v1' and '$v2': $_" -Level WARN
-            return -2 # Indicate an error in comparison
+            return -2
         }
     }
 
-    # --- Script & Metadata Reading (from the NEW version's _internal folder) ---
-    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition # This will be {app}\_internal
+    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
     Write-Log "Script directory (_internal, containing new version's setup files) is: $scriptDir"
 
     $packageMetadataFile = Join-Path $scriptDir "metadata.txt"
@@ -102,7 +99,6 @@ try {
         }
     }
     $newAppName            = $packageMetadata["AppName"]
-    $newEntryFile          = $packageMetadata["EntryFile"]
     $newVersion            = $packageMetadata["Version"]
     $appFolderName         = $packageMetadata["AppFolder"]
     $requiredPythonVersion = $packageMetadata["PythonVersion"]
@@ -116,9 +112,9 @@ try {
     Write-Log "  New Package Version: $newVersion"
     Write-Log "  Required Python Version for new package: $requiredPythonVersion"
 
-    # --- VERSION CHECK AND AUTOMATIC ACTION LOGIC ---
-    $performCleanInstallWipe = $false # Flag to indicate a full directory wipe is needed
+    $performCleanInstallWipe = $false
 
+    # Version comparison logic
     Write-Log "Starting version check. CurrentInstalledVersion: '$CurrentInstalledVersion', NewVersion from metadata: '$newVersion'"
 
     if (-not [string]::IsNullOrEmpty($CurrentInstalledVersion)) {
@@ -126,25 +122,23 @@ try {
         $versionComparisonResult = Compare-Versions $newVersion $CurrentInstalledVersion
         Write-Log "Version comparison result: $versionComparisonResult (-1 means new<current, 0 means new=current, 1 means new>current, -2 means error)"
 
-        if ($versionComparisonResult -eq 1) { # New version is GREATER than current (Update)
+        if ($versionComparisonResult -eq 1) {
             Write-Log "Installer version ($newVersion) is newer than installed version ($CurrentInstalledVersion). This is an update. Proceeding." -Level INFO
-        } elseif ($versionComparisonResult -eq 0 -or $versionComparisonResult -eq -1) { # New version is SAME or OLDER (Downgrade/Reinstall)
+        } elseif ($versionComparisonResult -eq 0 -or $versionComparisonResult -eq -1) {
             Write-Log "Installer version ($newVersion) is the same as or older than the installed version ($CurrentInstalledVersion). Performing automatic clean install wipe." -Level WARN
-            $performCleanInstallWipe = $true # This flag will trigger directory cleaning
-        } else { # Error in version comparison (-2)
+            $performCleanInstallWipe = $true
+        } else {
              Write-Log "Could not reliably compare versions ($newVersion vs $CurrentInstalledVersion due to format issues). Proceeding cautiously as if it's a standard update/install (no wipe)." -Level WARN
         }
     } else {
         Write-Log "No CurrentInstalledVersion provided. Assuming fresh install. Proceeding."
-        # $performCleanInstallWipe remains false, as it's a fresh install into potentially an empty or new directory.
-        # The Python setup logic will handle creating/cleaning the Env dir.
     }
 
-    # --- CONDITIONAL DIRECTORY WIPE for Clean Install Scenario ---
+    # Conditional clean install wipe
     if ($performCleanInstallWipe) {
         Write-Log "Performing clean install wipe due to version logic." -Level WARN
         Write-Log "Target directory for wipe: $targetDir. Script directory (to exclude): $scriptDir"
-        $internalFolderName = Split-Path -Leaf $scriptDir # Should be "_internal"
+        $internalFolderName = Split-Path -Leaf $scriptDir
         if (-not [string]::IsNullOrEmpty($internalFolderName)) {
             Write-Log "Attempting to remove all items in '$targetDir' EXCEPT '$internalFolderName'..."
             Get-ChildItem -Path $targetDir -Exclude $internalFolderName -Force | ForEach-Object {
@@ -162,7 +156,7 @@ try {
         }
     }
 
-    # --- Define core paths ---
+    # Python environment detection and setup decision
     $envDir = Join-Path $targetDir "Env"
     $pythonExe = Join-Path $envDir "python.exe"
     $appCodePath = Join-Path -Path $targetDir -ChildPath $appFolderName
@@ -174,7 +168,6 @@ try {
     }
     Write-Log "Found new requirements file at: $reqFile (will be used for pip install)"
     
-    # --- Test write permissions (early check) ---
     Write-Log "Testing write permissions to target directory '$targetDir'..."
     try {
         $testFilePath = Join-Path $targetDir "test_write_permissions.tmp"
@@ -187,9 +180,8 @@ try {
         throw "Installation failed due to insufficient permissions. You may need to choose a writable folder."
     }
 
-    # --- Check for existing installation and determine if Python environment needs full setup/refresh ---
     $performFullPythonSetup = $false
-    $isUpdateScenarioLogging = $false # For logging context only
+    $isUpdateScenarioLogging = $false
 
     if ($performCleanInstallWipe) {
         Write-Log "Clean install wipe was performed. Forcing full Python setup."
@@ -264,11 +256,11 @@ try {
                 }
             } else { Write-Log "No default ._pth file found in '$envDir' to replace." -Level WARN }
         } else { Write-Log "No custom_pth.txt found in '$scriptDir', using default Python ._pth file." }
-    } elseif ($isUpdateScenarioLogging) { # Only true if Env existed, no wipe, and Python version matched
+    } elseif ($isUpdateScenarioLogging) {
         Write-Log "Python environment at '$envDir' does not require a version update. Proceeding to check pip and dependencies."
     }
 
-    # --- Ensure pip is installed in the Env ---
+    # pip availability and installation
     Write-Log "Ensuring pip is available in '$pythonExe'..."
     $pipVersion = ""
     if (-not (Test-Path $pythonExe)) {
@@ -324,7 +316,6 @@ try {
         }
     } else { Write-Log "pip is already installed: $pipVersion" }
 
-    # --- Upgrade pip, wheel, and setuptools ---
     Write-Log "Upgrading pip, wheel, setuptools, and pep517..."
     try {
         & $pythonExe -m pip install --upgrade pip wheel setuptools pep517
@@ -337,7 +328,6 @@ try {
         throw "FATAL: Could not upgrade base build tools. Error: $_"
     }
     
-    # Python 3.12+ setuptools<60 logic
     $pyVerMajor = 0
     $pyVerMinor = 0
     try {
@@ -365,7 +355,7 @@ try {
         }
     }
 
-   # --- Install/Update Dependencies using pip ---
+    # Dependencies installation
    if ($isUpdateScenarioLogging -and -not $performFullPythonSetup) { 
        Write-Log "Updating dependencies for the existing environment from '$reqFile'..."
    } else { 
@@ -436,15 +426,13 @@ try {
        }
    } else { Write-Log "No dependencies found in '$reqFile' (excluding python lines and comments) to install/update." }
 
-    # --- Final Steps ---
     Write-Log "-----------------------------------------------------"
 
-    # --- Update Registry with DisplayVersion ---
+    # Update registry with new DisplayVersion
     if ($NewAppVersion -and $AppIdForRegistry) {
         Write-Log "Attempting to update DisplayVersion in registry for AppId '$AppIdForRegistry' to version '$NewAppVersion'."
         try {
             $uninstallKeyPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$($AppIdForRegistry)_is1"
-            # Ensure the key exists, otherwise RegWriteStringValue might not work as expected by Inno Setup's functions
             if (-not (Test-Path $uninstallKeyPath)) {
                 Write-Log "Registry key '$uninstallKeyPath' does not exist. Creating it."
                 New-Item -Path $uninstallKeyPath -Force | Out-Null
@@ -453,7 +441,6 @@ try {
             Write-Log "Successfully updated DisplayVersion to '$NewAppVersion' in registry path '$uninstallKeyPath'."
         } catch {
             Write-Log "ERROR: Failed to update DisplayVersion in registry. Error: $($_.Exception.Message)" -Level ERROR
-            # Do not throw here, as the main installation was successful. This is a secondary step.
         }
     } else {
         Write-Log "Skipping DisplayVersion registry update because NewAppVersion or AppIdForRegistry was not provided." -Level WARN
@@ -493,6 +480,5 @@ $($_.TargetObject)
     exit 1
 }
 
-# Success
 Write-Log "Setup script completed successfully."
 exit 0

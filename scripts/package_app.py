@@ -1,15 +1,20 @@
-#!/usr/bin/env python3
 """
-package_app.py   –   build a *folder* ready for ISCC
-┌────────────────────────────────────────────────────────────┐
-│  <out‑dir>/                                               │
-│     SetupFiles/   boot.py  metadata.txt  custom_pth.txt   │
-│     setup.bat                                              │
-│     <YourProject>/  (your whole source tree, patched)      │
-└────────────────────────────────────────────────────────────┘
-No ZIP is produced; ISCC can point straight at <out‑dir>.
-"""
+Prepares Python application files for packaging by Inno Setup.
 
+This script takes an application source directory and organizes its content,
+along with necessary helper scripts and metadata, into a staging directory.
+This staging directory is then used by `build_installer.py` to create the
+final Windows installer.
+
+Key tasks performed:
+- Copies application source code.
+- Determines Python version from `requirements.txt` or uses a default.
+- Generates `boot.py` (the application launcher).
+- Generates `metadata.txt` (with application name, version, entry file, etc.).
+- Generates `custom_pth.txt` (for Python's site-specific configuration).
+- Copies installer helper scripts (`setup.ps1`, `setup_gui.ps1`).
+- Creates a helper `setup.bat` for manual execution of `setup.ps1`.
+"""
 import argparse, os, re, shutil, sys
 from pathlib import Path
 from packaging.version import parse as parse_version
@@ -23,7 +28,7 @@ def get_python_version(req: Path) -> str:
     """Return python version from requirements.txt or 3.10.0.
     Warns if the version is below 3.9.
     """
-    # Check for all possible formats
+    # Regex patterns to find Python version specifiers in requirements.txt
     formats = [
         re.compile(r"python\s*==\s*([\d.]+)", re.I),            # python==3.12.1
         re.compile(r'python\s*==\s*"([\d.]+)"', re.I),          # python=="3.12.1"
@@ -57,11 +62,19 @@ def get_python_version(req: Path) -> str:
         print(f"Warning: Error reading requirements.txt: {e}. Using default Python version {default_version}.")
     
     # Default if no version found or error occurred
-    if not found_version_str: # Only print this if no version was found at all
+    if not found_version_str:
         print(f"No Python version found in requirements.txt. Using default {default_version}")
     return default_version
 
 def generate_custom_pth(ver: str) -> str:
+    """Generates the content for a .pth file to configure Python's sys.path.
+
+    Args:
+        ver: The Python version string (e.g., "3.10.0").
+
+    Returns:
+        A string containing the .pth file content.
+    """
     parts = ver.split(".")
     base  = "python" + parts[0] + parts[1] if len(parts) >= 2 else "python" + ver.replace(".","")
     return f"{base}.zip\nLib\n.\nimport site\n"
@@ -74,9 +87,8 @@ def create_boot_py(internal_scripts_dir: Path, app_pkg_name: str, entry_module_f
     
     module_path_str = str(Path(entry_module_file.replace("\\", ".").replace("/", ".")).with_suffix(""))
 
-    # Placeholders for constants that will be embedded into boot.py
-    # These are different from app_pkg_placeholder and module_path_placeholder which are app-specific.
-    # These define standard sub-directory names within the installed application.
+    # These constants define standard sub-directory names within the installed application.
+    # They are embedded into the boot.py template.
     boot_template = """#!/usr/bin/env python3
 import sys
 import os
@@ -195,6 +207,12 @@ Please check the log file for a detailed traceback and report this issue.\"\"\"
     (internal_scripts_dir / "boot.py").write_text(boot_script_content, encoding="utf-8")
     
 def ensure_pkg_tree(root: Path) -> None:
+    """Ensures that all directories containing .py files within the given root
+    are Python packages by creating an __init__.py file if one doesn't exist.
+
+    Args:
+        root: The root directory to scan.
+    """
     for cur,_,files in os.walk(root):
         if any(f.endswith(".py") for f in files):
             ip = Path(cur, "__init__.py")
@@ -208,59 +226,54 @@ def build(out_dir: Path,
           version: str) -> None:
     """
     Builds the application package into out_dir.
+
     The structure will be:
     <out_dir>/
         _internal/  (contains setup.ps1, metadata.txt, boot.py, custom_pth.txt, setup.bat)
         <app_name>/ (contains the application source code)
     """
-    print(f"Building {app_name} v{version} from {src_dir} into {out_dir}")
+    print(f"Packaging {app_name} v{version} from {src_dir} into {out_dir}")
 
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True) # Ensure out_dir itself exists
 
-    # Create the directory for internal scripts and metadata (e.g., <out_dir>/_internal)
     internal_dir = out_dir / INTERNAL_SCRIPTS_DIR_NAME
     internal_dir.mkdir(exist_ok=True)
 
-    # 1. Copy installer scripts (setup.ps1, etc.) into the internal directory
-    #    These scripts are part of the 'Env' folder where package_app.py resides.
+    # Copy installer helper scripts (e.g., setup.ps1) from the directory where package_app.py resides.
     current_script_dir = Path(__file__).parent
-    # Note: setup_gui.ps1 was in your original code, keeping it. Remove if not needed.
-    for fname in ("setup.ps1", "setup_gui.ps1"): 
+    # setup_gui.ps1 is included here as it was in the original project structure.
+    # If it's not used by your setup.ps1 or Inno Setup script, it can be removed from this list.
+    for fname in ("setup.ps1", "setup_gui.ps1"):
         source_file = current_script_dir / fname
         if source_file.is_file():
             shutil.copy2(source_file, internal_dir / fname)
         else:
             print(f"Warning: Script '{fname}' not found in '{current_script_dir}', not copied.")
 
-
-    # Get Python version from the application's requirements.txt
     pyver = get_python_version(src_dir / "requirements.txt")
     
-    # 2. Create metadata.txt and boot.py in the internal directory
     (internal_dir / "metadata.txt").write_text(
         f"AppName={app_name}\n"
-        f"AppFolder={app_name}\n" # App's code will be in a subfolder named app_name
+        f"AppFolder={app_name}\n" # App's code will be in a subfolder named after the app_name within the install root
         f"EntryFile={entry_file}\n"
         f"Version={version}\n"
         f"PythonVersion={pyver}\n",
         encoding="utf-8")
         
-    # create_boot_py writes boot.py into internal_dir
-    create_boot_py(internal_dir, app_name, entry_file) 
+    create_boot_py(internal_dir, app_name, entry_file)
     
-    # 3. Create custom_pth.txt in the internal directory
     (internal_dir / "custom_pth.txt").write_text(generate_custom_pth(pyver), "ascii")
 
-    # 4. Copy the application's source code tree into <out_dir>/<app_name>
-    app_code_destination_dir = out_dir / app_name 
-    if app_code_destination_dir.exists(): # Should not happen if out_dir was cleared, but good practice
+    # Copy the application's source code tree.
+    app_code_destination_dir = out_dir / app_name
+    if app_code_destination_dir.exists():
         shutil.rmtree(app_code_destination_dir)
     shutil.copytree(src_dir, app_code_destination_dir, ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '.git', '.vscode'))
-    ensure_pkg_tree(app_code_destination_dir) # Ensure __init__.py files in the copied code
+    ensure_pkg_tree(app_code_destination_dir) # Ensure all subdirectories are importable packages.
 
-    # 5. Create a helper setup.bat in the internal directory
+    # Create a helper batch file for manually testing setup.ps1.
     (internal_dir / "setup.bat").write_text(
         '@echo off\r\n'
         f'echo Running setup from %~dp0setup.ps1\r\n'
@@ -273,6 +286,7 @@ def build(out_dir: Path,
 
 # ───────────────────── CLI ─────────────────────
 def main() -> None:
+    """Command-line interface for the application packager."""
     ap = argparse.ArgumentParser(description="Create build folder for ISCC.")
     ap.add_argument("app_folder", help="Path to project with requirements.txt")
     ap.add_argument("--app-name",   default=None, help="Default: folder name")
@@ -293,4 +307,9 @@ def main() -> None:
           args.app_name or src.name, args.entry_file, args.version)
 
 if __name__ == "__main__":
-    main()
+    # Basic error handling for the CLI entry point
+    try:
+        main()
+    except Exception as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
